@@ -1,95 +1,113 @@
-from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from bot.i18n import t
+from aiogram.types import InlineKeyboardMarkup
+from urllib.parse import quote
+from bot.config import settings
 
 
-def main_menu_kb(lang: str, owner: bool = False) -> InlineKeyboardMarkup:
+def _buy_url(mint: str, dex: str | None = None) -> str:
+    d = (dex or "").lower()
+    if "dedust" in d:
+        return settings.BUY_URL_DEDUST.format(mint=mint)
+    return settings.BUY_URL_STONFI.format(mint=mint)
+
+
+def buy_kb(mint: str, dex: str | None = None) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text=t(lang, 'language'), callback_data='menu:language')
-    kb.button(text=t(lang, 'edit'), callback_data='menu:edit')
-    kb.button(text=t(lang, 'add_token'), callback_data='menu:add')
-    kb.button(text=t(lang, 'view_tokens'), callback_data='menu:view')
-    kb.button(text=t(lang, 'group_settings'), callback_data='menu:group')
-    kb.button(text=t(lang, 'trending'), callback_data='menu:trending')
-    kb.button(text=t(lang, 'advert'), callback_data='menu:advert')
-    if owner:
-        kb.button(text='👑 Owner', callback_data='menu:owner')
-    kb.adjust(2, 2, 2, 1, 1 if owner else 0)
-    return kb.as_markup()
-
-
-def language_kb() -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text='🇺🇸 English', callback_data='lang:en')
-    kb.button(text='🇷🇺 Russian', callback_data='lang:ru')
+    kb.button(text="Buy", url=_buy_url(mint, dex))
+    kb.button(text="Trending", url=settings.TRENDING_URL)
     kb.adjust(2)
     return kb.as_markup()
 
 
-def source_kb() -> InlineKeyboardMarkup:
+def leaderboard_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    for source in ('stonfi', 'dedust', 'blum', 'gaspump'):
-        kb.button(text=source.upper(), callback_data=f'source:{source}')
-    kb.adjust(2, 2)
+    kb.button(text="Listing", url=settings.LISTING_URL)
     return kb.as_markup()
 
 
-def token_list_kb(tokens, action: str = 'edit') -> InlineKeyboardMarkup:
+def main_menu_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    for token in tokens:
-        title = token['symbol'] or token['name'] or token['token_address'][:8]
-        kb.button(text=f'✏️ {title}', callback_data=f'{action}:{token["token_address"]}')
-    kb.button(text='« Return', callback_data='menu:home')
+    kb.button(text="🇺🇸 Language", callback_data="menu:lang")
+    kb.button(text="✏️ Edit", callback_data="menu:edit")
+    kb.button(text="➕ Add Token", callback_data="menu:add")
+    kb.button(text="👀 View Tokens", callback_data="menu:view")
+    kb.button(text="⚙️ Group Settings", callback_data="menu:group")
+    kb.button(text="📈 Trending", callback_data="menu:trending")
+    kb.button(text="💎 Ads", callback_data="menu:advert")
+    kb.adjust(2, 2, 2, 1)
+    return kb.as_markup()
+
+
+def lang_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🇺🇸 English ✅", callback_data="lang:set:english")
+    kb.button(text="🇷🇺 Russian", callback_data="lang:set:russian")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+def token_list_kb(tokens: list[tuple[str, str]], prefix: str, back: str = "menu:home") -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for mint, label in tokens:
+        kb.button(text=f"✏️ {label}", callback_data=f"{prefix}:{mint}")
+    kb.button(text="⬅️ Back", callback_data=back)
     kb.adjust(1)
     return kb.as_markup()
 
 
-def edit_token_kb(lang: str, token_address: str) -> InlineKeyboardMarkup:
+def token_edit_page_kb(mint: str, page: int, values: dict | None = None) -> InlineKeyboardMarkup:
+    values = values or {}
     kb = InlineKeyboardBuilder()
-    kb.button(text='ℹ️ Buy Step', callback_data=f'edit:buy_step:{token_address}')
-    kb.button(text='✏️', callback_data=f'editv:buy_step:{token_address}')
-    kb.button(text='ℹ️ Min Buy', callback_data=f'edit:min_buy:{token_address}')
-    kb.button(text='✏️', callback_data=f'editv:min_buy:{token_address}')
-    kb.button(text='ℹ️ Link', callback_data=f'edit:link:{token_address}')
-    kb.button(text='✏️', callback_data=f'editv:link:{token_address}')
-    kb.button(text='ℹ️ Emoji', callback_data=f'edit:emoji:{token_address}')
-    kb.button(text='✏️', callback_data=f'editv:emoji:{token_address}')
-    kb.button(text='ℹ️ Media', callback_data=f'edit:media:{token_address}')
-    kb.button(text='✏️', callback_data=f'editv:media:{token_address}')
-    kb.button(text=t(lang, 'return'), callback_data='menu:home')
-    kb.adjust(2, 2, 2, 2, 2, 1)
+    kb.button(text="✅ Page 1", callback_data=f"editpage:{mint}:1")
+    rows = [
+        ("ℹ️ Buy Step", "buy_step", f"✏️ ({values.get('buy_step', 1)})"),
+        ("ℹ️ Min Buy", "min_buy", f"✏️ ({values.get('min_buy', 0)})"),
+        ("ℹ️ Link", "link", "✏️ (set)" if values.get('telegram_link') else "✏️ ()"),
+        ("ℹ️ Emoji", "emoji", f"✏️ ({values.get('emoji', '🟢')})"),
+        ("ℹ️ Media", "media", "✏️ (📸)" if values.get('media_file_id') else "✏️ ()"),
+    ]
+    for left, key, right in rows:
+        kb.button(text=left, callback_data=f"editset:{mint}:{key}")
+        kb.button(text=right, callback_data=f"editset:{mint}:{key}")
+    kb.button(text="⬅️ Back", callback_data="menu:home")
+    kb.adjust(1, 2, 2, 2, 2, 2, 1)
     return kb.as_markup()
 
 
-def durations_kb(kind: str, lang: str) -> InlineKeyboardMarkup:
-    keys = [('1h', 'hours_1'), ('3h', 'hours_3'), ('6h', 'hours_6'), ('9h', 'hours_9'), ('12h', 'hours_12'), ('24h', 'hours_24')] if kind == 'trending' else [('1d', 'days_1'), ('3d', 'days_3'), ('7d', 'days_7')]
+def trending_slot_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    for value, label in keys:
-        kb.button(text=t(lang, label), callback_data=f'duration:{kind}:{value}')
-    kb.button(text=t(lang, 'return'), callback_data='menu:home')
-    kb.adjust(2 if kind == 'trending' else 3, 2 if kind == 'trending' else 1, 2 if kind == 'trending' else 1, 1)
-    return kb.as_markup()
-
-
-def invoice_kb(amount: float, lang: str) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text=t(lang, 'return'), callback_data='menu:home')
-    kb.button(text=t(lang, 'refresh'), callback_data='invoice:refresh')
-    kb.button(text=t(lang, 'pay_amount', amount=f'{amount:g}'), url='ton://transfer')
+    kb.button(text="TOP3", callback_data="trendslot:top3")
+    kb.button(text="TOP10", callback_data="trendslot:top10")
+    kb.button(text="⬅️ Back", callback_data="menu:home")
     kb.adjust(2, 1)
     return kb.as_markup()
 
 
-def buy_post_kb(metrics_url: str, secondary_url: str, secondary_text: str) -> InlineKeyboardMarkup:
+def trending_duration_kb(slot_name: str) -> InlineKeyboardMarkup:
+    plans = {
+        "top3": [("2h", "2h — 7 TON"), ("4h", "4h — 14 TON"), ("8h", "8h — 21 TON"), ("24h", "24h — 35 TON")],
+        "top10": [("2h", "2h — 5 TON"), ("4h", "4h — 10 TON"), ("8h", "8h — 17 TON"), ("24h", "24h — 30 TON")],
+    }
     kb = InlineKeyboardBuilder()
-    kb.button(text='Metrics', url=metrics_url)
-    kb.button(text=secondary_text, url=secondary_url)
-    kb.adjust(2)
+    for key, label in plans.get(slot_name, []):
+        kb.button(text=label, callback_data=f"trenddur:{slot_name}:{key}")
+    kb.button(text="⬅️ Back", callback_data="menu:trending")
+    kb.adjust(1)
     return kb.as_markup()
 
 
-def leaderboard_kb(listing_url: str) -> InlineKeyboardMarkup:
+def advert_duration_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text='Listing', url=listing_url)
+    for key, label in [("1d", "1day — 10 TON"), ("3d", "3days — 25 TON"), ("7d", "7days — 60 TON")]:
+        kb.button(text=label, callback_data=f"adpkg:{key}")
+    kb.button(text="⬅️ Back", callback_data="menu:home")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def invoice_kb(invoice_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Verify Payment", callback_data=f"invoice:paid:{invoice_id}")
+    kb.button(text="⬅️ Back Home", callback_data="menu:home")
     kb.adjust(1)
     return kb.as_markup()

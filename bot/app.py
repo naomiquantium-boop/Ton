@@ -8,53 +8,57 @@ from dotenv import load_dotenv
 from bot.config import settings
 from database.db import DB
 from database.migrations import CREATE_TABLES
-from bot.handlers import router as handlers_router
+from utils.ton_rpc import TonAPI
 from bot.wizard import router as wizard_router
+from bot.handlers import router as handlers_router
 from services.buy_watcher import BuyWatcher
 from services.leaderboard import LeaderboardUpdater
-from services.payment_verifier import PaymentVerifier
-from services.ton_providers import TonAPIClient, TonCenterClient
-
 
 async def _migrate(db: DB):
     conn = await db.connect()
-    try:
-        for stmt in CREATE_TABLES:
+    for stmt in CREATE_TABLES:
+        try:
             await conn.execute(stmt)
-        await conn.commit()
-    finally:
-        await conn.close()
-
+        except Exception:
+            pass
+    upgrades = [
+        "ALTER TABLE tracked_tokens ADD COLUMN telegram_link TEXT",
+        "ALTER TABLE tracked_tokens ADD COLUMN symbol TEXT",
+        "ALTER TABLE tracked_tokens ADD COLUMN name TEXT",
+        "ALTER TABLE tracked_tokens ADD COLUMN force_trending INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE tracked_tokens ADD COLUMN force_leaderboard INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE tracked_tokens ADD COLUMN manual_rank INTEGER",
+        "ALTER TABLE tracked_tokens ADD COLUMN trend_until_ts INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE tracked_tokens ADD COLUMN trending_slot TEXT",
+        "ALTER TABLE tracked_tokens ADD COLUMN preferred_dex TEXT",
+        "ALTER TABLE ads ADD COLUMN link TEXT",
+        "ALTER TABLE ads ADD COLUMN kind TEXT NOT NULL DEFAULT 'ad'",
+        "ALTER TABLE token_settings ADD COLUMN media_kind TEXT NOT NULL DEFAULT 'photo'",
+        "ALTER TABLE invoices ADD COLUMN memo TEXT",
+        "ALTER TABLE invoices ADD COLUMN slot_name TEXT",
+    ]
+    for stmt in upgrades:
+        try:
+            await conn.execute(stmt)
+        except Exception:
+            pass
+    await conn.commit(); await conn.close()
 
 async def run():
     load_dotenv()
     db = DB(settings.DATABASE_URL)
     await _migrate(db)
-
     bot = Bot(token=settings.BOT_TOKEN, parse_mode=ParseMode.HTML)
     dp = Dispatcher(storage=MemoryStorage())
-
-    toncenter = TonCenterClient(settings.TONCENTER_BASE_URL, settings.TONCENTER_API_KEY) if settings.ENABLE_TONCENTER else None
-    tonapi = TonAPIClient(settings.TONAPI_BASE_URL, settings.TONAPI_API_KEY) if settings.ENABLE_TONAPI else None
-    payment_verifier = PaymentVerifier(db, toncenter, tonapi, settings.MERCHANT_WALLET)
-
-    dp.workflow_data.update({
-        'db': db,
-        'payment_verifier': payment_verifier,
-    })
-
+    rpc = TonAPI(settings.TONCENTER_API_BASE, timeout=float(settings.TON_API_TIMEOUT), api_key=settings.TONCENTER_API_KEY)
+    dp.workflow_data.update({"db": db, "rpc": rpc})
     dp.include_router(handlers_router)
     dp.include_router(wizard_router)
-
-    watcher = BuyWatcher(bot=bot, db=db, toncenter=toncenter, tonapi=tonapi)
+    watcher = BuyWatcher(bot=bot, db=db, rpc=rpc)
     lb = LeaderboardUpdater(bot=bot, db=db)
-    task_watch = asyncio.create_task(watcher.run_forever())
+    task = asyncio.create_task(watcher.run_forever())
     task_lb = asyncio.create_task(lb.run_forever())
     try:
         await dp.start_polling(bot)
     finally:
-        task_watch.cancel()
-        task_lb.cancel()
-        await watcher.close()
-        await lb.close()
-        await bot.session.close()
+        task.cancel(); task_lb.cancel(); await lb.close(); await watcher.close(); await rpc.close(); await bot.session.close()
