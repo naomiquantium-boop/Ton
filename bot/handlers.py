@@ -9,7 +9,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
-from bot.config import settings, normalize_chat_ref
+from bot.config import settings
 from bot.keyboards import (
     main_menu_kb, token_list_kb, advert_duration_kb, invoice_kb, lang_kb,
     token_edit_page_kb, trending_slot_kb, trending_duration_kb,
@@ -531,22 +531,19 @@ async def forceleaderboard(msg: Message, command: CommandObject, db: DB):
 async def createleaderboard(msg: Message, db: DB):
     if not await _ensure_owner(msg):
         return
-    target_chat = normalize_chat_ref(settings.TRENDING_CHANNEL or settings.POST_CHANNEL) or msg.chat.id
+    target_chat = settings.POST_CHANNEL_TARGET if settings.POST_CHANNEL else msg.chat.id
     text = '🏆 <b>SpyTON Trending Leaderboard</b>\n\nLoading leaderboard...'
-    try:
-        sent = await msg.bot.send_message(target_chat, text, reply_markup=__import__('bot.keyboards', fromlist=['leaderboard_kb']).leaderboard_kb(), parse_mode='HTML', disable_web_page_preview=True)
-    except Exception as e:
-        return await msg.reply(f'❌ Failed to create leaderboard in <code>{target_chat}</code>.\nMake sure the bot is admin and use the channel ID like <code>-100...</code>.\n\nError: <code>{type(e).__name__}</code>', parse_mode='HTML')
+    sent = await msg.bot.send_message(target_chat, text, reply_markup=__import__('bot.keyboards', fromlist=['leaderboard_kb']).leaderboard_kb(), parse_mode='HTML', disable_web_page_preview=True)
     conn = await db.connect()
     await conn.execute("INSERT INTO state_kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", ('leaderboard_message_id', str(sent.message_id)))
     await conn.commit(); await conn.close()
-    await msg.reply(f'✅ Leaderboard created in <code>{target_chat}</code>.\nMessage ID: <code>{sent.message_id}</code>', parse_mode='HTML')
+    await msg.reply(f'✅ Leaderboard created in {target_chat}.\nMessage ID: <code>{sent.message_id}</code>', parse_mode='HTML')
 
 @router.message(Command('refreshleaderboard'))
 async def refreshleaderboard(msg: Message):
     if not await _ensure_owner(msg):
         return
-    await msg.reply(f'✅ Leaderboard refresher is running for <code>{normalize_chat_ref(settings.TRENDING_CHANNEL or settings.POST_CHANNEL)}</code>. It updates automatically every 30 seconds.', parse_mode='HTML')
+    await msg.reply('✅ Leaderboard refresher is running. It updates automatically every 30 seconds.')
 
 @router.message(Command('removetrending'))
 async def removetrending(msg: Message, command: CommandObject, db: DB):
