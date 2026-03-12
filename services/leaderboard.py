@@ -70,8 +70,32 @@ class LeaderboardUpdater:
             is_live = mint in pinned_top3 or mint in pinned_top10
             if (not label or label.upper() == 'TOKEN' or label == mint or label == mint[:6]) and not is_live and mcap <= 0:
                 continue
+
+            prev_mcap = 0.0
+            try:
+                cur = await conn.execute(
+                    "SELECT mcap_usd FROM mcap_snapshots WHERE mint=? ORDER BY ts DESC, id DESC LIMIT 1",
+                    (mint,),
+                )
+                prev_row = await cur.fetchone()
+                prev_mcap = float(prev_row['mcap_usd']) if prev_row and prev_row['mcap_usd'] is not None else 0.0
+            except Exception:
+                prev_mcap = 0.0
+
+            pct = 0.0
+            if prev_mcap > 0 and mcap > 0:
+                pct = ((mcap - prev_mcap) / prev_mcap) * 100.0
+
             metric = f"{mcap/1_000_000:.0f}M" if mcap >= 1_000_000 else (f"{mcap/1_000:.0f}K" if mcap >= 1_000 else f"{mcap:.0f}")
-            rows.append((len(rows) + 1, label, metric, 0.0, tg_links.get(mint), meta.get('dexUrl')))
+            rows.append((len(rows) + 1, label, metric, pct, tg_links.get(mint), meta.get('dexUrl')))
+
+            if mcap > 0:
+                await conn.execute(
+                    "INSERT INTO mcap_snapshots(mint, mcap_usd, ts) VALUES(?,?,?)",
+                    (mint, mcap, now),
+                )
+
+        await conn.commit()
         text = build_leaderboard_message(rows, settings.LEADERBOARD_FOOTER_HANDLE)
         target_chat = settings.TRENDING_CHANNEL_TARGET
         try:
