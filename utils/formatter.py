@@ -31,7 +31,11 @@ def build_channel_post(token: dict, event: dict, settings: dict, ad_text: str, a
     title = escape(token.get('symbol') or token.get('name') or 'Token')
     token_link = token.get('telegram_link') or ''
     token_title = f'<a href="{escape(token_link)}">{title}</a>' if token_link else title
-    wallet_line = f'<a href="{escape(event["wallet_url"])}">{escape(short_addr(event["buyer"]))}</a>: {event.get("position_pct", '0%')} | <a href="{escape(event["tx_url"])}">Txn</a>'
+    wallet_url = escape(event.get("wallet_url", ""))
+    buyer_short = escape(short_addr(event.get("buyer", "")))
+    position_pct = escape(str(event.get("position_pct", "0%")))
+    tx_url = escape(event.get("tx_url", ""))
+    wallet_line = f'<a href="{wallet_url}">{buyer_short}</a>: {position_pct} | <a href="{tx_url}">Txn</a>'
     amount_line = strength_row(settings.get('emoji', '✅'), event['spent_ton'], settings.get('buy_step', 1))
     holders = fmt_num(event.get('holders', 0))
     links = []
