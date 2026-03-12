@@ -33,6 +33,41 @@ class BuyWatcher:
     async def _set_last_sig(self, conn, mint: str, sig: str):
         await conn.execute("INSERT INTO state_kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (f'last_sig:{mint}', sig)); await conn.commit()
 
+    async def _was_posted(self, conn, sig: str) -> bool:
+        cur = await conn.execute("SELECT 1 FROM state_kv WHERE k=?", (f'posted_tx:{sig}',))
+        return (await cur.fetchone()) is not None
+
+    async def _mark_posted(self, conn, sig: str):
+        await conn.execute("INSERT INTO state_kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (f'posted_tx:{sig}', str(int(time.time()))))
+        await conn.commit()
+
+    def _row_failed_flag(self, row: dict) -> bool:
+        if row.get('successful') is False or row.get('success') is False:
+            return True
+        if row.get('aborted') is True or row.get('transaction_aborted') is True or row.get('tx_aborted') is True:
+            return True
+        status = str(row.get('status') or '').lower()
+        if status in {'failed', 'error', 'aborted'}:
+            return True
+        return False
+
+    def _tx_is_successful(self, tx: dict | None) -> bool | None:
+        if not tx:
+            return None
+        desc = tx.get('description') or {}
+        if desc.get('aborted') is True:
+            return False
+        compute = tx.get('compute_ph') or tx.get('compute_phase') or {}
+        if compute.get('success') is False:
+            return False
+        action = tx.get('action') or tx.get('action_phase') or {}
+        if action and action.get('success') is False:
+            return False
+        status = str(tx.get('status') or '').lower()
+        if status in {'failed', 'error', 'aborted'}:
+            return False
+        return True
+
     async def run_forever(self):
         self._running = True
         while self._running:
@@ -41,7 +76,7 @@ class BuyWatcher:
             await asyncio.sleep(settings.POLL_INTERVAL_SEC)
 
     async def _fetch_events(self, mint: str, last_sig: str | None):
-        rows = await self.rpc.get_jetton_transfers(mint, limit=15)
+        rows = await self.rpc.get_jetton_transfers(mint, limit=20)
         events, newest = [], None
         now = int(time.time())
         for row in rows:
@@ -51,10 +86,11 @@ class BuyWatcher:
             if newest is None:
                 newest = sig
             if last_sig is None:
-                # first sync: remember newest transfer but do not post history
                 continue
             if sig == last_sig:
                 break
+            if self._row_failed_flag(row):
+                continue
             amount_raw = row.get('amount') or row.get('jetton_amount') or 0
             decimals = int((row.get('jetton') or {}).get('decimals') or row.get('decimals') or 9)
             try:
@@ -82,14 +118,29 @@ class BuyWatcher:
             if newest_sig and newest_sig != last_sig and not new_events:
                 await self._set_last_sig(conn, mint, newest_sig)
             for ev in new_events:
-                await self._set_last_sig(conn, mint, ev['signature'])
-                await self._post_buy(mint, ev, tgt, ad_text, ad_link, ton_price)
+                sig = ev['signature']
+                if await self._was_posted(conn, sig):
+                    await self._set_last_sig(conn, mint, sig)
+                    continue
+                tx_ok = None
+                try:
+                    tx = await self.rpc.get_transaction_by_hash(sig)
+                    tx_ok = self._tx_is_successful(tx)
+                except Exception:
+                    tx_ok = None
+                if tx_ok is False:
+                    await self._set_last_sig(conn, mint, sig)
+                    continue
+                posted = await self._post_buy(mint, ev, tgt, ad_text, ad_link, ton_price)
+                if posted:
+                    await self._mark_posted(conn, sig)
+                await self._set_last_sig(conn, mint, sig)
         await conn.close()
 
     async def _post_buy(self, mint: str, ev: dict, tgt: dict, ad_text: str | None, ad_link: str | None, ton_price: float):
         meta = await fetch_token_meta(mint); token_name = meta.get('symbol') or meta.get('name') or mint[:6]
         got_tokens = float(ev.get('got_tokens') or 0.0); buyer = ev.get('buyer') or 'Unknown'; spent_usd = (float(meta.get('priceUsd') or 0.0) * got_tokens) if meta.get('priceUsd') is not None else 0.0; spent_ton = (spent_usd / ton_price) if spent_usd and ton_price else 0.0
-        if spent_ton < float(settings.MIN_BUY_DEFAULT_TON): return
+        if spent_ton < float(settings.MIN_BUY_DEFAULT_TON): return False
         now_ts = int(time.time())
         try:
             conn2 = await self.db.connect()
@@ -98,13 +149,15 @@ class BuyWatcher:
             if meta.get('mcapUsd') is not None: await conn2.execute("INSERT INTO mcap_snapshots(mint, mcap_usd, ts) VALUES(?,?,?)", (mint, float(meta.get('mcapUsd')), now_ts))
             await conn2.commit(); await conn2.close()
         except Exception: pass
-        tx_url = settings.TON_VIEWER_TX_URL.format(tx=ev['signature']); tg_url = tgt.get('telegram_link'); token_cfg = {'buy_step': 1, 'min_buy': 0.0, 'emoji': '🟢', 'media_file_id': None, 'media_kind': 'photo'}
+        tx_hash_hex = self.rpc.tx_hash_to_hex(ev['signature']) or ev['signature']
+        tx_url = settings.TON_VIEWER_TX_URL.format(tx=tx_hash_hex); tg_url = tgt.get('telegram_link'); token_cfg = {'buy_step': 1, 'min_buy': 0.0, 'emoji': '🟢', 'media_file_id': None, 'media_kind': 'photo'}
         try:
             conn_tg = await self.db.connect(); cur2 = await conn_tg.execute("SELECT telegram_link, preferred_dex FROM tracked_tokens WHERE mint=?", (mint,)); row2 = await cur2.fetchone(); cur3 = await conn_tg.execute("SELECT buy_step, min_buy, emoji, media_file_id, media_kind FROM token_settings WHERE mint=?", (mint,)); row3 = await cur3.fetchone(); await conn_tg.close()
             if row2 and row2[0]: tg_url = row2[0]
             if row3: token_cfg = {'buy_step': row3[0] or 1, 'min_buy': float(row3[1] or 0.0), 'emoji': row3[2] or '🟢', 'media_file_id': row3[3], 'media_kind': row3[4] or 'photo'}
         except Exception: pass
         msg_text_channel = build_buy_message_channel(token_symbol=token_name, emoji='✅', spent_sol=spent_ton, spent_usd=spent_usd, spent_symbol='TON', spent_value=spent_ton, got_tokens=got_tokens, buyer=buyer, tx_url=tx_url, price_usd=meta.get('priceUsd'), mcap_usd=meta.get('mcapUsd'), tg_url=tg_url, ad_text=ad_text, ad_link=ad_link, chart_url=meta.get('dexUrl'))
+        sent_any = False
         for r in tgt['groups']:
             min_buy = max(float(settings.MIN_BUY_DEFAULT_TON), float(r['min_buy_sol'] or 0), float(token_cfg.get('min_buy') or 0))
             if spent_ton < min_buy: continue
@@ -121,12 +174,16 @@ class BuyWatcher:
                     await self.bot.send_document(chat_id, media, caption=msg_text2, reply_markup=buy_kb(mint, meta.get('dexName')), parse_mode='HTML')
                 else:
                     await self.bot.send_photo(chat_id, media, caption=msg_text2, reply_markup=buy_kb(mint, meta.get('dexName')), parse_mode='HTML')
-            except Exception: pass
+                sent_any = True
+            except Exception:
+                pass
         if settings.POST_CHANNEL and (tgt.get('groups') or tgt.get('post_channel')):
             try:
                 await self.bot.send_message(settings.POST_CHANNEL_TARGET, msg_text_channel, reply_markup=buy_kb(mint, meta.get('dexName')), disable_web_page_preview=True, parse_mode='HTML')
+                sent_any = True
             except Exception:
                 pass
+        return sent_any
 
     async def close(self):
         self._running = False
