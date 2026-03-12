@@ -14,6 +14,7 @@ class Settings(BaseModel):
     OWNER_ID: int = int(_get("OWNER_ID"))
     BOT_USERNAME: str = _get("BOT_USERNAME", "SpyTONBot")
     POST_CHANNEL: str = _get("POST_CHANNEL", "@SpyTONTrending")
+    TRENDING_CHANNEL: str = _get("TRENDING_CHANNEL", os.getenv("POST_CHANNEL", "@SpyTONTrending"))
     LISTING_URL: str = _get("LISTING_URL", "https://t.me/SpyTONPortal")
     TRENDING_URL: str = _get("TRENDING_URL", "https://t.me/SpyTONTrending")
     LEADERBOARD_MESSAGE_ID: int = int(_get("LEADERBOARD_MESSAGE_ID", "0"))
@@ -58,3 +59,20 @@ class Settings(BaseModel):
 
 
 settings = Settings()
+
+
+def normalize_chat_ref(value: str | int | None) -> str | int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    raw = str(value).strip()
+    if not raw:
+        return None
+    if raw.startswith('-100') and raw[1:].isdigit():
+        return int(raw)
+    if raw.startswith('-') and raw[1:].isdigit():
+        return int(raw)
+    if raw.isdigit():
+        return int(raw)
+    return raw
