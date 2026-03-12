@@ -26,6 +26,7 @@ class Settings(BaseModel):
     OWNER_ID: int = int(_get("OWNER_ID"))
     BOT_USERNAME: str = _get("BOT_USERNAME", "SpyTONBot")
     POST_CHANNEL: str = _get("POST_CHANNEL", "@SpyTONTrending")
+    TRENDING_CHANNEL: str = _get("TRENDING_CHANNEL", _get("POST_CHANNEL", "@SpyTONTrending"))
     LISTING_URL: str = _get("LISTING_URL", "https://t.me/SpyTONPortal")
     TRENDING_URL: str = _get("TRENDING_URL", "https://t.me/SpyTONTrending")
     LEADERBOARD_MESSAGE_ID: int = int(_get("LEADERBOARD_MESSAGE_ID", "25145"))
@@ -64,6 +65,10 @@ class Settings(BaseModel):
     @property
     def POST_CHANNEL_TARGET(self) -> str | int:
         return _chat_target(self.POST_CHANNEL)
+
+    @property
+    def TRENDING_CHANNEL_TARGET(self) -> str | int:
+        return _chat_target(self.TRENDING_CHANNEL)
 
     @property
     def BOOK_ADS_URL(self) -> str:

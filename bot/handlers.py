@@ -531,13 +531,26 @@ async def forceleaderboard(msg: Message, command: CommandObject, db: DB):
 async def createleaderboard(msg: Message, db: DB):
     if not await _ensure_owner(msg):
         return
-    target_chat = settings.POST_CHANNEL_TARGET if settings.POST_CHANNEL else msg.chat.id
+    target_chat = settings.TRENDING_CHANNEL_TARGET if settings.TRENDING_CHANNEL else msg.chat.id
     text = '🏆 <b>SpyTON Trending Leaderboard</b>\n\nLoading leaderboard...'
-    sent = await msg.bot.send_message(target_chat, text, reply_markup=__import__('bot.keyboards', fromlist=['leaderboard_kb']).leaderboard_kb(), parse_mode='HTML', disable_web_page_preview=True)
+    kb = __import__('bot.keyboards', fromlist=['leaderboard_kb']).leaderboard_kb()
+    fixed_mid = int(getattr(settings, 'LEADERBOARD_MESSAGE_ID', 0) or 0)
     conn = await db.connect()
-    await conn.execute("INSERT INTO state_kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", ('leaderboard_message_id', str(sent.message_id)))
-    await conn.commit(); await conn.close()
-    await msg.reply(f'✅ Leaderboard created in {target_chat}.\nMessage ID: <code>{sent.message_id}</code>', parse_mode='HTML')
+    try:
+        if fixed_mid:
+            await msg.bot.edit_message_text(text=text, chat_id=target_chat, message_id=fixed_mid, reply_markup=kb, parse_mode='HTML', disable_web_page_preview=True)
+            await conn.execute("INSERT INTO state_kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", ('leaderboard_message_id', str(fixed_mid)))
+            await conn.commit()
+            await msg.reply(f'✅ Leaderboard target set to existing message.\nMessage ID: <code>{fixed_mid}</code>', parse_mode='HTML')
+            return
+        sent = await msg.bot.send_message(target_chat, text, reply_markup=kb, parse_mode='HTML', disable_web_page_preview=True)
+        await conn.execute("INSERT INTO state_kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", ('leaderboard_message_id', str(sent.message_id)))
+        await conn.commit()
+        await msg.reply(f'✅ Leaderboard created in {target_chat}.\nMessage ID: <code>{sent.message_id}</code>', parse_mode='HTML')
+    except Exception as e:
+        await msg.reply(f'❌ Could not target leaderboard message. Make sure the channel ID is correct, the bot is admin, and LEADERBOARD_MESSAGE_ID belongs to a message sent by this bot.\n\nError: <code>{type(e).__name__}: {e}</code>', parse_mode='HTML', disable_web_page_preview=True)
+    finally:
+        await conn.close()
 
 @router.message(Command('refreshleaderboard'))
 async def refreshleaderboard(msg: Message):
