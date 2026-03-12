@@ -1,110 +1,101 @@
 from __future__ import annotations
-from html import escape
+from bot.config import settings
+from typing import Optional
+
+RANK_EMOJIS = {1: "1️⃣", 2: "2️⃣", 3: "3️⃣", 4: "4️⃣", 5: "5️⃣", 6: "6️⃣", 7: "7️⃣", 8: "8️⃣", 9: "9️⃣", 10: "🔟"}
 
 
-def short_addr(addr: str, head: int = 4, tail: int = 4) -> str:
-    if not addr:
-        return 'Unknown'
-    if len(addr) <= head + tail + 3:
-        return addr
-    return f'{addr[:head]}...{addr[-tail:]}'
+def short_addr(a: str, left: int = 4, right: int = 4) -> str:
+    if not a:
+        return "Unknown"
+    if len(a) <= left + right + 3:
+        return a
+    return f"{a[:left]}...{a[-right:]}"
 
 
-def fmt_num(v: float) -> str:
-    if v >= 1_000_000_000:
-        return f'{v/1_000_000_000:.0f}B'
-    if v >= 1_000_000:
-        return f'{v/1_000_000:.0f}M'
-    if v >= 1_000:
-        return f'{v/1_000:.0f}K'
-    if float(v).is_integer():
-        return f'{int(v)}'
-    return f'{v:,.2f}'
+def emoji_bar(emoji: str, count: int = 3) -> str:
+    return " ".join([emoji] * max(1, count))
 
 
-def strength_row(emoji: str, spent_ton: float, step: float) -> str:
-    count = max(1, min(24, int(spent_ton / max(step, 0.01))))
-    return ''.join([emoji] * count)
+def fmt_num(x: float, decimals: int = 2) -> str:
+    try:
+        return f"{x:,.{decimals}f}"
+    except Exception:
+        return str(x)
 
 
-def build_channel_post(token: dict, event: dict, settings: dict, ad_text: str, ad_link: str | None, trending_url: str) -> str:
-    title = escape(token.get('symbol') or token.get('name') or 'Token')
-    token_link = token.get('telegram_link') or ''
-    token_title = f'<a href="{escape(token_link)}">{title}</a>' if token_link else title
-    wallet_url = escape(event.get("wallet_url", ""))
-    buyer_short = escape(short_addr(event.get("buyer", "")))
-    position_pct = escape(str(event.get("position_pct", "0%")))
-    tx_url = escape(event.get("tx_url", ""))
-    wallet_line = f'<a href="{wallet_url}">{buyer_short}</a>: {position_pct} | <a href="{tx_url}">Txn</a>'
-    amount_line = strength_row(settings.get('emoji', '✅'), event['spent_ton'], settings.get('buy_step', 1))
-    holders = fmt_num(event.get('holders', 0))
-    links = []
-    listing = token.get('listing_link')
-    if listing:
-        links.append(f'💎 <a href="{escape(listing)}">Listing</a>')
-    buy_link = token.get('buy_link') or trending_url
-    links.append(f'🐸 <a href="{escape(buy_link)}">Buy</a>')
-    chart = token.get('chart_link') or event.get('chart_url') or ''
-    if chart:
-        links.append(f'📊 <a href="{escape(chart)}">Chart</a>')
-    ad = f'<a href="{escape(ad_link)}">{escape(ad_text)}</a>' if ad_link else escape(ad_text)
-    return (
-        f'{token_title} Buy!\n\n'
-        f'{amount_line}\n\n'
-        f'◭ {event["spent_ton"]:.2f} TON (${event["spent_usd"]:.2f})\n'
-        f'🔁 {event["got_tokens"]:,.2f} {title}\n'
-        f'🔁 {holders} Holders\n'
-        f'👤 {wallet_line}\n'
-        f'💵 Price: ${event["price_usd"]:.6f}\n'
-        f'💵 MarketCap: ${event["market_cap_usd"]:,.0f}\n\n'
-        f'{" | ".join(links)}\n'
-        f'ad: {ad}'
-    )
+def _norm_url(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+    u = url.strip()
+    if not u:
+        return None
+    if u.startswith("@"):
+        return f"https://t.me/{u[1:]}"
+    if u.startswith("t.me/"):
+        return "https://" + u
+    if u.startswith("http://"):
+        return "https://" + u[len("http://"):]
+    return u
 
 
-def build_group_post(token: dict, event: dict, settings: dict, ad_text: str, ad_link: str | None, trending_url: str) -> str:
-    title = escape(token.get('symbol') or token.get('name') or 'Token')
-    token_link = token.get('telegram_link') or ''
-    token_title = f'<a href="{escape(token_link)}">{title}</a>' if token_link else title
-    wallet_line = f'<a href="{escape(event["wallet_url"])}">{escape(short_addr(event["buyer"]))}</a> | <a href="{escape(event["tx_url"])}">Txn</a>'
-    amount_line = strength_row(settings.get('emoji', '🦞'), event['spent_ton'], settings.get('buy_step', 1))
-    links = [f'<a href="{escape(event["tx_url"])}">TX</a>']
-    if token.get('listing_link'):
-        links.append(f'<a href="{escape(token["listing_link"])}">GT</a>')
-    chart = token.get('chart_link') or event.get('chart_url') or ''
-    if chart:
-        links.append(f'<a href="{escape(chart)}">DexS</a>')
-    if token_link:
-        links.append(f'<a href="{escape(token_link)}">Telegram</a>')
-    links.append(f'<a href="{escape(trending_url)}">Trending</a>')
-    ad = f'<a href="{escape(ad_link)}">{escape(ad_text)}</a>' if ad_link else escape(ad_text)
-    return (
-        f'{token_title} Buy!\n'
-        f'{amount_line}\n\n'
-        f'Spent: <b>{event["spent_ton"]:.2f} TON</b>\n'
-        f'Got: <b>{event["got_tokens"]:,.2f} {title}</b>\n\n'
-        f'{wallet_line}\n\n'
-        f'Price: ${event["price_usd"]:.6f}\n'
-        f'Liquidity: ${event["liquidity_usd"]:,.0f}\n'
-        f'MCap: ${event["market_cap_usd"]:,.0f}\n'
-        f'Holders: {fmt_num(event.get("holders", 0))}\n'
-        f'{" | ".join(links)}\n\n'
-        f'ad: {ad}'
-    )
+def _a(label: str, url: Optional[str]) -> str:
+    u = _norm_url(url)
+    if not u:
+        return label
+    return f'<a href="{u}">{label}</a>'
 
 
-def build_leaderboard(tokens: list[dict], footer: str) -> str:
-    lines = ['🟢 SPYTON TRENDING\n']
-    for idx, token in enumerate(tokens[:10], 1):
-        rank = ['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣','🔟'][idx-1]
-        title = token.get('symbol') or token.get('name') or 'TOKEN'
-        mcap = fmt_num(token.get('market_cap_usd', 0))
-        change = token.get('trend_change_pct', 0)
-        sign = '+' if change > 0 else ''
-        token_link = token.get('chart_link') or ''
-        title_text = f'<a href="{escape(token_link)}">{escape(title)}</a>' if token_link else escape(title)
-        lines.append(f'{rank} {title_text} | {mcap} | {sign}{change:.0f}%')
+def _default_ad_line() -> str:
+    return f'ad: <a href="{settings.BOOK_ADS_URL}">Promote here with SpyTON Ads</a>'
+
+
+def _ad_line(ad_text: str | None, ad_link: str | None = None) -> str:
+    if ad_text and ad_text.strip():
+        if ad_link:
+            return f'ad: <a href="{_norm_url(ad_link)}">{ad_text}</a>'
+        return f"ad: {ad_text}"
+    return _default_ad_line()
+
+
+def _build(token_symbol, emoji, spent_sol, spent_usd, got_tokens, buyer, tx_url, price_usd, mcap_usd, tg_url, ad_text, ad_link, chart_url=None, spent_symbol="TON", spent_value=None):
+    title = f'🪐 {_a(token_symbol, tg_url)} Buy!'
+    count = max(3, min(12, int(spent_sol * 4) or 3))
+    display_value = spent_value if spent_value is not None else spent_sol
+    usd_part = f" (${fmt_num(spent_usd, 2)})" if spent_usd > 0 else ""
+    lines = [title, "", emoji_bar(emoji, count), ""]
+    lines.append(f"💵 {fmt_num(display_value, 2)} {spent_symbol}{usd_part}")
+    lines.append(f"🔁 {fmt_num(got_tokens, 2)} {_a(token_symbol, tg_url)}")
+    lines.append(f"👤 {_a(short_addr(buyer), tx_url)} | {_a('Txn', tx_url)}")
+    if price_usd is not None:
+        lines.append(f"🏷 Price: ${fmt_num(price_usd, 6)}")
+    if mcap_usd is not None:
+        lines.append(f"📊 MarketCap: ${fmt_num(mcap_usd, 0)}")
+    lines.append("")
+    lines.append(f'🤍 {_a("Listing", settings.LISTING_URL)} | 📈 {_a("Chart", chart_url or tx_url)}')
+    lines.append("")
+    lines.append(_ad_line(ad_text, ad_link))
+    return "\n".join(lines)
+
+
+def build_buy_message_group(**kwargs) -> str:
+    return _build(**kwargs)
+
+
+def build_buy_message_channel(**kwargs) -> str:
+    return _build(**kwargs)
+
+
+def build_leaderboard_message(rows: list[tuple[int, str, str, float, str | None]], footer_handle: str) -> str:
+    lines = ["🟢 SPYTON TRENDING", ""]
+    for idx, row in enumerate(rows[:10], start=1):
+        rank, label, metric, pct, chart_url = row
+        sign = "+" if pct > 0 else ""
+        token_part = _a(label, chart_url or settings.LISTING_URL)
+        metric_part = _a(metric, chart_url or settings.LISTING_URL)
+        lines.append(f'{RANK_EMOJIS.get(rank, str(rank))} {token_part} | {metric_part} | {sign}{pct:.0f}%')
         if idx == 3:
-            lines.append('──────────────')
-    lines.append(f'\n<blockquote>{escape(footer)}</blockquote>')
-    return '\n'.join(lines)
+            lines.append("────────────────────")
+    lines.append("")
+    lines.append(f"<blockquote>💬 To trend add {footer_handle} in your group</blockquote>")
+    return "\n".join(lines)
