@@ -10,4 +10,4 @@ async def on_added(evt: ChatMemberUpdated):
         return
     new = evt.new_chat_member
     if new and new.status in ("member", "administrator"):
-        await evt.bot.send_message(evt.chat.id, "Pumptools main menu", reply_markup=main_menu_kb())
+        await evt.bot.send_message(evt.chat.id, "SpyTON main menu", reply_markup=main_menu_kb())

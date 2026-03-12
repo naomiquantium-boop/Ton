@@ -58,7 +58,7 @@ def token_list_kb(tokens: list[tuple[str, str]], prefix: str, back: str = "menu:
 def token_edit_page_kb(mint: str, page: int, values: dict | None = None) -> InlineKeyboardMarkup:
     values = values or {}
     kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Page 1", callback_data="editpage:1")
+    kb.button(text="✅ Tab 1", callback_data="editpage:1")
     rows = [
         ("ℹ️ Buy Step", "buy_step", f"✏️ ({values.get('buy_step', 1)})"),
         ("ℹ️ Min Buy", "min_buy", f"✏️ ({values.get('min_buy', 0)})"),
