@@ -301,7 +301,7 @@ async def add_token_mint(msg: Message, state: FSMContext, db: DB):
             (msg.chat.id, mint, float(settings.MIN_BUY_DEFAULT_TON), '🟢', None, None, int(time.time())),
         )
         await conn.commit(); await conn.close(); await state.clear()
-        return await msg.answer(f"✅ Token Added\n• Token: {meta.get('name') or meta.get('symbol') or mint[:6]}\n• Dex: {meta.get('dexName') or '—'}\n\nNow posting buys automatically for this group.\nUse Edit to customize token settings.", reply_markup=main_menu_kb())
+        return await msg.answer(f"✅ Token Added\n• Token: {_label_from_meta(meta, mint, pending='Metadata pending')}\n• Dex: {meta.get('dexName') or '—'}\n\nNow posting buys automatically for this group.\nUse Edit to customize token settings.", reply_markup=main_menu_kb())
     await state.update_data(token_mint=mint); await state.set_state(AddTokenFlow.tg); await msg.answer('Send token Telegram link or type skip.')
 
 @router.message(AddTokenFlow.tg)
@@ -508,7 +508,7 @@ async def forceadd(msg: Message, command: CommandObject, db: DB):
     if not command.args: return await msg.reply('Usage:\n<code>/forceadd MINT|https://t.me/yourlink</code>', parse_mode='HTML')
     mint, tg = _parse_forceadd_args(command.args)
     if not mint: return await msg.reply('❌ Missing token mint.')
-    meta = await _upsert_tracked_token(db, mint, tg); await msg.reply(f"✅ Token added: {meta.get('symbol') or meta.get('name') or mint[:6]}")
+    meta = await _upsert_tracked_token(db, mint, tg); await msg.reply(f"✅ Token added: {_label_from_meta(meta, mint, pending='Metadata pending')}")
 
 @router.message(Command('forcetrending'))
 async def forcetrending(msg: Message, command: CommandObject, db: DB):
@@ -517,7 +517,7 @@ async def forcetrending(msg: Message, command: CommandObject, db: DB):
     mint, tg = _parse_forceadd_args(command.args); parts = command.args.split(); hours = 24
     for item in parts[1:]:
         if item.isdigit(): hours = int(item); break
-    meta = await _upsert_tracked_token(db, mint, tg); conn = await db.connect(); await conn.execute("UPDATE tracked_tokens SET post_mode='channel', force_trending=1, force_leaderboard=1, manual_rank=10, trending_slot='top10', trend_until_ts=?, telegram_link=COALESCE(?, telegram_link) WHERE mint=?", (int(time.time()) + hours * 3600, tg, mint)); await conn.commit(); await conn.close(); await msg.reply(f"✅ {meta.get('symbol') or meta.get('name') or mint[:6]} forced into trending for {hours}h.")
+    meta = await _upsert_tracked_token(db, mint, tg); conn = await db.connect(); await conn.execute("UPDATE tracked_tokens SET post_mode='channel', force_trending=1, force_leaderboard=1, manual_rank=10, trending_slot='top10', trend_until_ts=?, telegram_link=COALESCE(?, telegram_link) WHERE mint=?", (int(time.time()) + hours * 3600, tg, mint)); await conn.commit(); await conn.close(); await msg.reply(f"✅ {_label_from_meta(meta, mint, pending='Token')} forced into trending for {hours}h.")
 
 @router.message(Command('forceleaderboard'))
 async def forceleaderboard(msg: Message, command: CommandObject, db: DB):
