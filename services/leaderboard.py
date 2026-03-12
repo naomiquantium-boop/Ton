@@ -25,8 +25,23 @@ class LeaderboardUpdater:
             await asyncio.sleep(30)
 
     async def tick(self):
-        if not settings.TRENDING_CHANNEL: return
-        conn = await self.db.connect(); now = int(time.time()); since = now - 24 * 3600
+        if not settings.TRENDING_CHANNEL:
+            return
+        conn = await self.db.connect()
+        fixed_mid = int(getattr(settings, 'LEADERBOARD_MESSAGE_ID', 0) or 0)
+        saved_mid = await self._get_kv(conn, 'leaderboard_message_id')
+        if fixed_mid:
+            await self._set_kv(conn, 'leaderboard_message_id', str(fixed_mid))
+            target_mid = fixed_mid
+        elif saved_mid:
+            target_mid = int(saved_mid)
+        else:
+            # Never auto-create leaderboard posts from the updater.
+            # A leaderboard message must first be created by /createleaderboard,
+            # then the updater only edits that one message.
+            await conn.close()
+            return
+        now = int(time.time()); since = now - 24 * 3600
         cur = await conn.execute("SELECT mint, SUM(usd) AS vol FROM buys WHERE ts>=? GROUP BY mint ORDER BY vol DESC LIMIT 30", (since,))
         buy_rows = await cur.fetchall()
         cur = await conn.execute("SELECT mint, COALESCE(symbol, name, mint) AS label, manual_rank, trend_until_ts, trending_slot FROM tracked_tokens WHERE post_mode!='disabled' ORDER BY created_at DESC")
@@ -52,20 +67,10 @@ class LeaderboardUpdater:
         while len(rows) < 10:
             n = len(rows) + 1; rows.append((n, 'TOKEN', '0', 0.0, None))
         text = build_leaderboard_message(rows, settings.LEADERBOARD_FOOTER_HANDLE)
-        fixed_mid = int(getattr(settings, 'LEADERBOARD_MESSAGE_ID', 0) or 0)
-        if fixed_mid:
-            await self._set_kv(conn, 'leaderboard_message_id', str(fixed_mid))
-        mid = str(fixed_mid) if fixed_mid else await self._get_kv(conn, 'leaderboard_message_id')
         target_chat = settings.TRENDING_CHANNEL_TARGET
         try:
-            if not mid:
-                msg = await self.bot.send_message(target_chat, text, reply_markup=leaderboard_kb(), disable_web_page_preview=True, parse_mode='HTML')
-                await self._set_kv(conn, 'leaderboard_message_id', str(msg.message_id))
-            else:
-                await self.bot.edit_message_text(text=text, chat_id=target_chat, message_id=int(mid), reply_markup=leaderboard_kb(), disable_web_page_preview=True, parse_mode='HTML')
+            await self.bot.edit_message_text(text=text, chat_id=target_chat, message_id=int(target_mid), reply_markup=leaderboard_kb(), disable_web_page_preview=True, parse_mode='HTML')
         except TelegramBadRequest:
-            # When a fixed leaderboard message is configured, never create extra leaderboard posts.
-            # This prevents channel spam and only updates the chosen message.
             pass
         await conn.close()
 
