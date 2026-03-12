@@ -47,11 +47,7 @@ async def fetch_token_meta(mint: str) -> dict:
     fdv = p.get("fdv")
     dex_url = p.get("url")
     dex_name = p.get("dexId") or p.get("dexName") or ""
-    buy_url = None
-    if 'ston' in dex_name.lower():
-        buy_url = f"https://app.ston.fi/swap?ft=TON&tt={mint}"
-    elif 'dedust' in dex_name.lower():
-        buy_url = f"https://dedust.io/swap/TON/{mint}"
+    buy_url = f"https://t.me/dtrade?start=11TYq7LInG_{mint}"
     mcap_val = market_cap if market_cap not in (None, "", 0, "0") else fdv
     return {
         "name": name,

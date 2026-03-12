@@ -59,7 +59,7 @@ class BuyWatcher:
         return list(reversed(events)), newest
 
     async def tick(self):
-        conn = await self.db.connect(); targets = await self._load_targets(conn); ads_svc = AdsService(conn); active_ad_text, active_ad_link = await ads_svc.get_active_ad(); ad_text = active_ad_text or await ads_svc.get_owner_fallback(); ad_link = active_ad_link if active_ad_text else None
+        conn = await self.db.connect(); targets = await self._load_targets(conn); ads_svc = AdsService(conn); active_ad_text, active_ad_link = await ads_svc.get_active_ad(); fallback_text = await ads_svc.get_owner_fallback(); ad_text = active_ad_text or fallback_text or 'Promote here with SpyTON Ads'; ad_link = active_ad_link if active_ad_text else settings.BOOK_ADS_URL
         ton_price = await ton_usd(settings.TON_PRICE_URL)
         if ton_price and ton_price > 0: self._last_ton_price = ton_price
         else: ton_price = self._last_ton_price
