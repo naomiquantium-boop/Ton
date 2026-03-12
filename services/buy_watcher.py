@@ -43,18 +43,28 @@ class BuyWatcher:
     async def _fetch_events(self, mint: str, last_sig: str | None):
         rows = await self.rpc.get_jetton_transfers(mint, limit=15)
         events, newest = [], None
+        now = int(time.time())
         for row in rows:
             sig = row.get('transaction_hash') or row.get('tx_hash') or row.get('hash')
-            if not sig: continue
-            if newest is None: newest = sig
-            if sig == last_sig: break
+            if not sig:
+                continue
+            if newest is None:
+                newest = sig
+            if last_sig is None:
+                # first sync: remember newest transfer but do not post history
+                continue
+            if sig == last_sig:
+                break
             amount_raw = row.get('amount') or row.get('jetton_amount') or 0
             decimals = int((row.get('jetton') or {}).get('decimals') or row.get('decimals') or 9)
-            try: got_tokens = float(amount_raw) / (10 ** decimals)
-            except Exception: got_tokens = 0.0
+            try:
+                got_tokens = float(amount_raw) / (10 ** decimals)
+            except Exception:
+                got_tokens = 0.0
             buyer = row.get('destination') or row.get('to') or row.get('owner') or 'Unknown'
-            ts = int(row.get('utime') or row.get('timestamp') or time.time())
-            if got_tokens <= 0: continue
+            ts = int(row.get('utime') or row.get('timestamp') or now)
+            if got_tokens <= 0 or ts < now - 900:
+                continue
             events.append({'buyer': buyer, 'got_tokens': got_tokens, 'signature': sig, 'timestamp': ts})
         return list(reversed(events)), newest
 
@@ -66,7 +76,11 @@ class BuyWatcher:
         for mint, tgt in targets.items():
             last_sig = await self._get_last_sig(conn, mint)
             new_events, newest_sig = await self._fetch_events(mint, last_sig)
-            if newest_sig and newest_sig != last_sig and not new_events: await self._set_last_sig(conn, mint, newest_sig)
+            if last_sig is None and newest_sig:
+                await self._set_last_sig(conn, mint, newest_sig)
+                continue
+            if newest_sig and newest_sig != last_sig and not new_events:
+                await self._set_last_sig(conn, mint, newest_sig)
             for ev in new_events:
                 await self._set_last_sig(conn, mint, ev['signature'])
                 await self._post_buy(mint, ev, tgt, ad_text, ad_link, ton_price)
@@ -109,8 +123,10 @@ class BuyWatcher:
                     await self.bot.send_photo(chat_id, media, caption=msg_text2, reply_markup=buy_kb(mint, meta.get('dexName')), parse_mode='HTML')
             except Exception: pass
         if settings.POST_CHANNEL and (tgt.get('groups') or tgt.get('post_channel')):
-            try: await self.bot.send_message(settings.POST_CHANNEL, msg_text_channel, reply_markup=buy_kb(mint, meta.get('dexName')), disable_web_page_preview=True, parse_mode='HTML')
-            except Exception: pass
+            try:
+                await self.bot.send_message(settings.POST_CHANNEL, msg_text_channel, reply_markup=buy_kb(mint, meta.get('dexName')), disable_web_page_preview=True, parse_mode='HTML')
+            except Exception:
+                pass
 
     async def close(self):
         self._running = False

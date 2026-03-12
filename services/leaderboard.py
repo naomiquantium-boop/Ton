@@ -53,14 +53,20 @@ class LeaderboardUpdater:
             n = len(rows) + 1; rows.append((n, 'TOKEN', '0', 0.0, None))
         text = build_leaderboard_message(rows, f"@{settings.BOT_USERNAME}")
         fixed_mid = int(getattr(settings, 'LEADERBOARD_MESSAGE_ID', 0) or 0)
-        if fixed_mid: await self._set_kv(conn, 'leaderboard_message_id', str(fixed_mid))
+        if fixed_mid:
+            await self._set_kv(conn, 'leaderboard_message_id', str(fixed_mid))
         mid = str(fixed_mid) if fixed_mid else await self._get_kv(conn, 'leaderboard_message_id')
+        target_chat = settings.POST_CHANNEL
         try:
             if not mid:
-                msg = await self.bot.send_message(settings.POST_CHANNEL, text, reply_markup=leaderboard_kb(), disable_web_page_preview=True, parse_mode='HTML')
+                msg = await self.bot.send_message(target_chat, text, reply_markup=leaderboard_kb(), disable_web_page_preview=True, parse_mode='HTML')
                 await self._set_kv(conn, 'leaderboard_message_id', str(msg.message_id))
             else:
-                await self.bot.edit_message_text(text=text, chat_id=settings.POST_CHANNEL, message_id=int(mid), reply_markup=leaderboard_kb(), disable_web_page_preview=True, parse_mode='HTML')
+                try:
+                    await self.bot.edit_message_text(text=text, chat_id=target_chat, message_id=int(mid), reply_markup=leaderboard_kb(), disable_web_page_preview=True, parse_mode='HTML')
+                except TelegramBadRequest:
+                    msg = await self.bot.send_message(target_chat, text, reply_markup=leaderboard_kb(), disable_web_page_preview=True, parse_mode='HTML')
+                    await self._set_kv(conn, 'leaderboard_message_id', str(msg.message_id))
         except TelegramBadRequest:
             pass
         await conn.close()
