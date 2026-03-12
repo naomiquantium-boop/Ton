@@ -1,7 +1,7 @@
 from __future__ import annotations
 import asyncio, time
 from typing import Dict
-from bot.config import settings
+from bot.config import settings, normalize_chat_ref
 from services.token_meta import fetch_token_meta
 from services.ads_service import AdsService
 from utils.price import ton_usd
@@ -122,9 +122,10 @@ class BuyWatcher:
                 else:
                     await self.bot.send_photo(chat_id, media, caption=msg_text2, reply_markup=buy_kb(mint, meta.get('dexName')), parse_mode='HTML')
             except Exception: pass
-        if settings.POST_CHANNEL and (tgt.get('groups') or tgt.get('post_channel')):
+        post_target = normalize_chat_ref(settings.POST_CHANNEL)
+        if post_target and (tgt.get('groups') or tgt.get('post_channel')):
             try:
-                await self.bot.send_message(settings.POST_CHANNEL, msg_text_channel, reply_markup=buy_kb(mint, meta.get('dexName')), disable_web_page_preview=True, parse_mode='HTML')
+                await self.bot.send_message(post_target, msg_text_channel, reply_markup=buy_kb(mint, meta.get('dexName')), disable_web_page_preview=True, parse_mode='HTML')
             except Exception:
                 pass
 
