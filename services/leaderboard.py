@@ -25,7 +25,7 @@ class LeaderboardUpdater:
             await asyncio.sleep(30)
 
     async def tick(self):
-        if not settings.POST_CHANNEL: return
+        if not settings.TRENDING_CHANNEL: return
         conn = await self.db.connect(); now = int(time.time()); since = now - 24 * 3600
         cur = await conn.execute("SELECT mint, SUM(usd) AS vol FROM buys WHERE ts>=? GROUP BY mint ORDER BY vol DESC LIMIT 30", (since,))
         buy_rows = await cur.fetchall()
@@ -56,7 +56,7 @@ class LeaderboardUpdater:
         if fixed_mid:
             await self._set_kv(conn, 'leaderboard_message_id', str(fixed_mid))
         mid = str(fixed_mid) if fixed_mid else await self._get_kv(conn, 'leaderboard_message_id')
-        target_chat = settings.POST_CHANNEL_TARGET
+        target_chat = settings.TRENDING_CHANNEL_TARGET
         try:
             if not mid:
                 msg = await self.bot.send_message(target_chat, text, reply_markup=leaderboard_kb(), disable_web_page_preview=True, parse_mode='HTML')
