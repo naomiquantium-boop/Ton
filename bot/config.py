@@ -27,30 +27,34 @@ class Settings(BaseModel):
 
     PAYMENT_WALLET: str = _get("PAYMENT_WALLET")
 
-    TOP3_2H_PRICE_TON: float = float(_get("TOP3_2H_PRICE_TON", "7"))
-    TOP3_4H_PRICE_TON: float = float(_get("TOP3_4H_PRICE_TON", "14"))
-    TOP3_8H_PRICE_TON: float = float(_get("TOP3_8H_PRICE_TON", "21"))
-    TOP3_24H_PRICE_TON: float = float(_get("TOP3_24H_PRICE_TON", "35"))
+    TOP3_2H_PRICE_TON: float = 7
+    TOP3_4H_PRICE_TON: float = 14
+    TOP3_8H_PRICE_TON: float = 21
+    TOP3_24H_PRICE_TON: float = 35
 
-    TOP10_2H_PRICE_TON: float = float(_get("TOP10_2H_PRICE_TON", "5"))
-    TOP10_4H_PRICE_TON: float = float(_get("TOP10_4H_PRICE_TON", "10"))
-    TOP10_8H_PRICE_TON: float = float(_get("TOP10_8H_PRICE_TON", "17"))
-    TOP10_24H_PRICE_TON: float = float(_get("TOP10_24H_PRICE_TON", "30"))
+    TOP10_2H_PRICE_TON: float = 5
+    TOP10_4H_PRICE_TON: float = 10
+    TOP10_8H_PRICE_TON: float = 17
+    TOP10_24H_PRICE_TON: float = 30
 
-    ADS_1D_PRICE_TON: float = float(_get("ADS_1D_PRICE_TON", "10"))
-    ADS_3D_PRICE_TON: float = float(_get("ADS_3D_PRICE_TON", "25"))
-    ADS_7D_PRICE_TON: float = float(_get("ADS_7D_PRICE_TON", "60"))
+    ADS_1D_PRICE_TON: float = 10
+    ADS_3D_PRICE_TON: float = 25
+    ADS_7D_PRICE_TON: float = 60
 
     POLL_INTERVAL_SEC: int = int(_get("POLL_INTERVAL_SEC", "4"))
     MIN_BUY_DEFAULT_TON: float = float(_get("MIN_BUY_DEFAULT_TON", "0.25"))
 
     TON_PRICE_URL: str = _get("TON_PRICE_URL", "https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd")
-    BUY_URL_STONFI: str = _get("BUY_URL_STONFI", "https://app.ston.fi/swap?ft=TON&tt={mint}")
-    BUY_URL_DEDUST: str = _get("BUY_URL_DEDUST", "https://dedust.io/swap/TON/{mint}")
+    BUY_URL_STONFI: str = "https://t.me/dtrade?start=11TYq7LInG_{mint}"
+    BUY_URL_DEDUST: str = "https://t.me/dtrade?start=11TYq7LInG_{mint}"
 
     @property
     def BOOK_ADS_URL(self) -> str:
         return f"https://t.me/{self.BOT_USERNAME}?start=ads"
+
+    @property
+    def BOOK_TRENDING_URL(self) -> str:
+        return f"https://t.me/{self.BOT_USERNAME}?start=trending"
 
 
 settings = Settings()

@@ -254,8 +254,23 @@ async def _watch_invoice(bot, db: DB, rpc: TonAPI, chat_id: int, invoice_id: int
         await asyncio.sleep(20)
 
 @router.message(Command('start'))
-async def start(msg: Message, state: FSMContext):
-    await state.clear(); await msg.answer('SpyTON main menu', reply_markup=main_menu_kb())
+async def start(msg: Message, state: FSMContext, db: DB):
+    await state.clear()
+    payload = ''
+    parts = (msg.text or '').split(maxsplit=1)
+    if len(parts) > 1:
+        payload = parts[1].strip().lower()
+    if payload == 'ads':
+        tokens = await _tokens(db)
+        if not tokens:
+            return await msg.answer('💎 SpyTON Ads\n\nNo tracked tokens yet. Use ➕ Add Token first.', reply_markup=main_menu_kb())
+        return await msg.answer('💎 SpyTON Ads\n\nSelect your token to continue.', reply_markup=token_list_kb(tokens, 'adtoken', back='menu:home'))
+    if payload == 'trending':
+        tokens = await _tokens(db)
+        if not tokens:
+            return await msg.answer('📈 SpyTON Trending\n\nNo tracked tokens yet. Use ➕ Add Token first.', reply_markup=main_menu_kb())
+        return await msg.answer('📈 SpyTON Trending\n\nSelect your token to continue.', reply_markup=token_list_kb(tokens, 'trendtoken', back='menu:home'))
+    await msg.answer('SpyTON main menu', reply_markup=main_menu_kb())
 
 @router.callback_query(F.data == 'menu:home')
 async def menu_home(cq: CallbackQuery, state: FSMContext):
@@ -380,7 +395,7 @@ async def advert_menu(cq: CallbackQuery, db: DB, state: FSMContext):
     if not tokens:
         await cq.message.answer('No tracked tokens yet. Use ➕ Add Token first.')
     else:
-        await cq.message.answer('💎 Advertise your token\n\nSelect your token to continue.', reply_markup=token_list_kb(tokens, 'adtoken', back='menu:home'))
+        await cq.message.answer('💎 SpyTON Ads\n\nSelect your token to continue.', reply_markup=token_list_kb(tokens, 'adtoken', back='menu:home'))
     await cq.answer()
 
 @router.callback_query(F.data.startswith('adtoken:'))
@@ -416,7 +431,7 @@ async def trending_menu(cq: CallbackQuery, db: DB, state: FSMContext):
     if not tokens:
         await cq.message.answer('No tracked tokens yet. Use ➕ Add Token first.')
     else:
-        await cq.message.answer('📈 Trending\n\nSelect your token to continue.', reply_markup=token_list_kb(tokens, 'trendtoken', back='menu:home'))
+        await cq.message.answer('📈 SpyTON Trending\n\nSelect your token to continue.', reply_markup=token_list_kb(tokens, 'trendtoken', back='menu:home'))
     await cq.answer()
 
 @router.callback_query(F.data.startswith('trendtoken:'))

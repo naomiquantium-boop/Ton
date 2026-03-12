@@ -14,7 +14,7 @@ def _buy_url(mint: str, dex: str | None = None) -> str:
 def buy_kb(mint: str, dex: str | None = None) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="Buy", url=_buy_url(mint, dex))
-    kb.button(text="Trending", url=settings.TRENDING_URL)
+    kb.button(text="Book Trending", url=settings.BOOK_TRENDING_URL)
     kb.adjust(2)
     return kb.as_markup()
 
