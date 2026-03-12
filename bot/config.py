@@ -36,6 +36,8 @@ class Settings(BaseModel):
 
     TONCENTER_API_BASE: str = _get("TONCENTER_API_BASE", "https://toncenter.com/api/v3")
     TONCENTER_API_KEY: str = os.getenv("TONCENTER_API_KEY", "")
+    TONAPI_BASE: str = _get("TONAPI_BASE", "https://tonapi.io/v2")
+    TONAPI_KEY: str = os.getenv("TONAPI_KEY", os.getenv("TON_API_KEY", ""))
     TON_API_TIMEOUT: int = int(_get("TON_API_TIMEOUT", "20"))
     TON_VIEWER_TX_URL: str = _get("TON_VIEWER_TX_URL", "https://tonviewer.com/transaction/{tx}")
 
