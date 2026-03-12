@@ -86,7 +86,7 @@ def build_buy_message_channel(**kwargs) -> str:
     return _build(**kwargs)
 
 
-def build_leaderboard_message(rows: list[tuple[int, str, str, float, str | None]], footer_handle: str) -> str:
+def build_leaderboard_message(rows: list[tuple[int, str, str, float, str | None]], footer_handle: str | None = None) -> str:
     lines = ["🟢 SPYTON TRENDING", ""]
     for idx, row in enumerate(rows[:10], start=1):
         rank, label, metric, pct, chart_url = row
@@ -97,5 +97,6 @@ def build_leaderboard_message(rows: list[tuple[int, str, str, float, str | None]
         if idx == 3:
             lines.append("────────────────────")
     lines.append("")
-    lines.append(f"<blockquote>💬 To trend add {footer_handle} in your group</blockquote>")
+    footer = footer_handle or settings.LEADERBOARD_FOOTER_HANDLE
+    lines.append(f"<blockquote>💬 To trend add {footer} in your group</blockquote>")
     return "\n".join(lines)
