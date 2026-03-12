@@ -96,7 +96,7 @@ def build_leaderboard_message(rows: list[tuple], footer_handle: str | None = Non
             rank, label, metric, pct, chart_url = row[:5]
             tg_url = None
         sign = "+" if pct > 0 else ""
-        token_part = _a(label, tg_url or chart_url or settings.LISTING_URL)
+        token_part = _a(label, tg_url) if tg_url else label
         metric_part = _a(metric, chart_url or settings.LISTING_URL)
         lines.append(f'{RANK_EMOJIS.get(rank, str(rank))} {token_part} | {metric_part} | {sign}{pct:.0f}%')
     lines.append("")
