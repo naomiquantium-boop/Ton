@@ -138,7 +138,16 @@ class BuyWatcher:
         await conn.close()
 
     async def _post_buy(self, mint: str, ev: dict, tgt: dict, ad_text: str | None, ad_link: str | None, ton_price: float):
-        meta = await fetch_token_meta(mint); token_name = meta.get('symbol') or meta.get('name') or mint[:6]
+        meta = await fetch_token_meta(mint); token_name = (meta.get('symbol') or meta.get('name') or mint[:6]);
+        if token_name.startswith(('EQ', 'UQ', 'kQ', '0:')):
+            token_name = mint[:6]
+        try:
+            if meta.get('symbol') or meta.get('name') or meta.get('dexName'):
+                connm = await self.db.connect()
+                await connm.execute("UPDATE tracked_tokens SET symbol=COALESCE(?, symbol), name=COALESCE(?, name), preferred_dex=COALESCE(?, preferred_dex) WHERE mint=?", (meta.get('symbol'), meta.get('name'), meta.get('dexName'), mint))
+                await connm.commit(); await connm.close()
+        except Exception:
+            pass
         got_tokens = float(ev.get('got_tokens') or 0.0); buyer = ev.get('buyer') or 'Unknown'; spent_usd = (float(meta.get('priceUsd') or 0.0) * got_tokens) if meta.get('priceUsd') is not None else 0.0; spent_ton = (spent_usd / ton_price) if spent_usd and ton_price else 0.0
         if spent_ton < float(settings.MIN_BUY_DEFAULT_TON): return False
         now_ts = int(time.time())
