@@ -335,25 +335,43 @@ async def view_token(cq: CallbackQuery, db: DB):
 async def menu_edit(cq: CallbackQuery, state: FSMContext, db: DB):
     mint = await _group_token(db, cq.message.chat.id) if cq.message and cq.message.chat.type in ('group', 'supergroup') else None
     if mint:
-        await _ensure_token_settings(db, mint); await state.clear(); text2, values = await _render_edit_page(db, mint); await cq.message.answer(text2, parse_mode='HTML', reply_markup=token_edit_page_kb(mint, 1, values)); return await cq.answer()
+        await _ensure_token_settings(db, mint); await state.clear(); await state.update_data(edit_page_mint=mint); text2, values = await _render_edit_page(db, mint); await cq.message.answer(text2, parse_mode='HTML', reply_markup=token_edit_page_kb(mint, 1, values)); return await cq.answer()
     tokens = await _tokens(db)
     await cq.message.answer('Hi, please select your token below.' if tokens else 'No tracked tokens yet.', reply_markup=token_list_kb(tokens, 'edittoken', back='menu:home') if tokens else None)
     await cq.answer()
 
 @router.callback_query(F.data.startswith('edittoken:'))
 async def edit_token(cq: CallbackQuery, state: FSMContext, db: DB):
-    mint = cq.data.split(':', 1)[1]; await _ensure_token_settings(db, mint); await state.clear(); text2, values = await _render_edit_page(db, mint); await cq.message.answer(text2, parse_mode='HTML', reply_markup=token_edit_page_kb(mint, 1, values)); await cq.answer()
+    mint = cq.data.split(':', 1)[1]
+    await _ensure_token_settings(db, mint)
+    await state.clear()
+    await state.update_data(edit_page_mint=mint)
+    text2, values = await _render_edit_page(db, mint)
+    await cq.message.answer(text2, parse_mode='HTML', reply_markup=token_edit_page_kb(mint, 1, values))
+    await cq.answer()
 
 @router.callback_query(F.data.startswith('editpage:'))
-async def edit_page(cq: CallbackQuery, db: DB):
-    mint = cq.data.split(':')[1]; text, values = await _render_edit_page(db, mint); await cq.message.answer(text, parse_mode='HTML', reply_markup=token_edit_page_kb(mint, 1, values)); await cq.answer()
+async def edit_page(cq: CallbackQuery, state: FSMContext, db: DB):
+    data = await state.get_data()
+    mint = data.get('edit_page_mint')
+    if not mint:
+        return await cq.answer('Open Edit again.', show_alert=True)
+    text, values = await _render_edit_page(db, mint)
+    await cq.message.answer(text, parse_mode='HTML', reply_markup=token_edit_page_kb(mint, 1, values))
+    await cq.answer()
 
 @router.callback_query(F.data.startswith('editset:'))
 async def edit_set(cq: CallbackQuery, state: FSMContext):
-    _, mint, key = cq.data.split(':', 2)
-    await state.clear(); await state.set_state(EditTokenFlow.value); await state.update_data(edit_mint=mint, edit_key=key)
+    key = cq.data.split(':', 1)[1]
+    data = await state.get_data()
+    mint = data.get('edit_page_mint')
+    if not mint:
+        return await cq.answer('Open Edit again.', show_alert=True)
+    await state.set_state(EditTokenFlow.value)
+    await state.update_data(edit_mint=mint, edit_key=key, edit_page_mint=mint)
     prompts = {'buy_step': 'Send buy step number.', 'min_buy': 'Send minimum buy in TON.', 'link': 'Send Telegram link or type skip.', 'emoji': 'Send emoji.', 'media': 'Send a photo, GIF, or video to use as media, or type skip to clear it.'}
-    await cq.message.answer(prompts.get(key, 'Send value.')); await cq.answer()
+    await cq.message.answer(prompts.get(key, 'Send value.'))
+    await cq.answer()
 
 @router.message(EditTokenFlow.value)
 async def edit_token_value(msg: Message, state: FSMContext, db: DB):
@@ -506,6 +524,26 @@ async def forceleaderboard(msg: Message, command: CommandObject, db: DB):
     if not await _ensure_owner(msg): return
     if not command.args: return await msg.reply('Usage:\n<code>/forceleaderboard MINT</code>', parse_mode='HTML')
     mint = command.args.strip().split()[0]; await _upsert_tracked_token(db, mint); conn = await db.connect(); await conn.execute("UPDATE tracked_tokens SET force_leaderboard=1 WHERE mint=?", (mint,)); await conn.commit(); await conn.close(); await msg.reply('✅ Token forced into leaderboard.')
+
+
+
+@router.message(Command('createleaderboard'))
+async def createleaderboard(msg: Message, db: DB):
+    if not await _ensure_owner(msg):
+        return
+    target_chat = settings.POST_CHANNEL or msg.chat.id
+    text = '🏆 <b>SpyTON Trending Leaderboard</b>\n\nLoading leaderboard...'
+    sent = await msg.bot.send_message(target_chat, text, reply_markup=__import__('bot.keyboards', fromlist=['leaderboard_kb']).leaderboard_kb(), parse_mode='HTML', disable_web_page_preview=True)
+    conn = await db.connect()
+    await conn.execute("INSERT INTO state_kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", ('leaderboard_message_id', str(sent.message_id)))
+    await conn.commit(); await conn.close()
+    await msg.reply(f'✅ Leaderboard created in {target_chat}.\nMessage ID: <code>{sent.message_id}</code>', parse_mode='HTML')
+
+@router.message(Command('refreshleaderboard'))
+async def refreshleaderboard(msg: Message):
+    if not await _ensure_owner(msg):
+        return
+    await msg.reply('✅ Leaderboard refresher is running. It updates automatically every 30 seconds.')
 
 @router.message(Command('removetrending'))
 async def removetrending(msg: Message, command: CommandObject, db: DB):

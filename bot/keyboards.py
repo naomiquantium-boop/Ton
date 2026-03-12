@@ -58,7 +58,7 @@ def token_list_kb(tokens: list[tuple[str, str]], prefix: str, back: str = "menu:
 def token_edit_page_kb(mint: str, page: int, values: dict | None = None) -> InlineKeyboardMarkup:
     values = values or {}
     kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Page 1", callback_data=f"editpage:{mint}:1")
+    kb.button(text="✅ Page 1", callback_data="editpage:1")
     rows = [
         ("ℹ️ Buy Step", "buy_step", f"✏️ ({values.get('buy_step', 1)})"),
         ("ℹ️ Min Buy", "min_buy", f"✏️ ({values.get('min_buy', 0)})"),
@@ -67,8 +67,8 @@ def token_edit_page_kb(mint: str, page: int, values: dict | None = None) -> Inli
         ("ℹ️ Media", "media", "✏️ (📸)" if values.get('media_file_id') else "✏️ ()"),
     ]
     for left, key, right in rows:
-        kb.button(text=left, callback_data=f"editset:{mint}:{key}")
-        kb.button(text=right, callback_data=f"editset:{mint}:{key}")
+        kb.button(text=left, callback_data=f"editset:{key}")
+        kb.button(text=right, callback_data=f"editset:{key}")
     kb.button(text="⬅️ Back", callback_data="menu:home")
     kb.adjust(1, 2, 2, 2, 2, 2, 1)
     return kb.as_markup()
