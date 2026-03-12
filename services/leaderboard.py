@@ -44,28 +44,34 @@ class LeaderboardUpdater:
         now = int(time.time()); since = now - 24 * 3600
         cur = await conn.execute("SELECT mint, SUM(usd) AS vol FROM buys WHERE ts>=? GROUP BY mint ORDER BY vol DESC LIMIT 30", (since,))
         buy_rows = await cur.fetchall()
-        cur = await conn.execute("SELECT mint, COALESCE(symbol, name, mint) AS label, manual_rank, trend_until_ts, trending_slot FROM tracked_tokens WHERE post_mode!='disabled' ORDER BY created_at DESC")
+        cur = await conn.execute("SELECT mint, COALESCE(symbol, name, mint) AS label, telegram_link, manual_rank, trend_until_ts, trending_slot FROM tracked_tokens WHERE post_mode!='disabled' ORDER BY created_at DESC")
         tracked = await cur.fetchall()
+        cur = await conn.execute("SELECT token_mint AS mint, MAX(telegram_link) AS telegram_link FROM group_settings WHERE telegram_link IS NOT NULL AND telegram_link!='' GROUP BY token_mint")
+        group_links = {r['mint']: r['telegram_link'] for r in await cur.fetchall()}
         metrics = {r['mint']: float(r['vol'] or 0) for r in buy_rows}
         labels = {r['mint']: r['label'] for r in tracked}
+        tg_links = {r['mint']: (r['telegram_link'] or group_links.get(r['mint'])) for r in tracked}
+        tracked_mints = {r['mint'] for r in tracked}
         pinned_top3, pinned_top10 = [], []
         for r in tracked:
             if int(r['trend_until_ts'] or 0) > now:
-                if (r['trending_slot'] or '').lower() == 'top3': pinned_top3.append(r['mint'])
-                else: pinned_top10.append(r['mint'])
+                if (r['trending_slot'] or '').lower() == 'top3':
+                    pinned_top3.append(r['mint'])
+                else:
+                    pinned_top10.append(r['mint'])
                 metrics[r['mint']] = max(metrics.get(r['mint'], 0.0), 1.0)
-        organic = [m for m, _ in sorted(metrics.items(), key=lambda kv: kv[1], reverse=True) if m not in pinned_top3 and m not in pinned_top10]
-        ordered_mints = pinned_top3[:3] + pinned_top10[:10-len(pinned_top3[:3])] + organic
-        ordered_mints = ordered_mints[:10]
-        rows: List[Tuple[int, str, str, float, str | None]] = []
-        for rank, mint in enumerate(ordered_mints, start=1):
+        organic = [m for m, _ in sorted(metrics.items(), key=lambda kv: kv[1], reverse=True) if m in tracked_mints and m not in pinned_top3 and m not in pinned_top10]
+        ordered_mints = (pinned_top3[:3] + pinned_top10[: max(0, 10 - len(pinned_top3[:3]))] + organic)[:10]
+        rows: List[Tuple[int, str, str, float, str | None, str | None]] = []
+        for mint in ordered_mints:
             meta = await fetch_token_meta(mint)
-            label = meta.get('symbol') or meta.get('name') or labels.get(mint) or mint[:6]
-            mcap = meta.get('mcapUsd') or metrics.get(mint, 0.0)
+            label = meta.get('symbol') or meta.get('name') or labels.get(mint) or 'Metadata pending'
+            mcap = float(meta.get('mcapUsd') or metrics.get(mint, 0.0) or 0.0)
+            is_live = mint in pinned_top3 or mint in pinned_top10
+            if (not label or label.upper() == 'TOKEN' or label == mint or label == mint[:6]) and not is_live and mcap <= 0:
+                continue
             metric = f"{mcap/1_000_000:.0f}M" if mcap >= 1_000_000 else (f"{mcap/1_000:.0f}K" if mcap >= 1_000 else f"{mcap:.0f}")
-            rows.append((rank, label, metric, 0.0, meta.get('dexUrl')))
-        while len(rows) < 10:
-            n = len(rows) + 1; rows.append((n, 'TOKEN', '0', 0.0, None))
+            rows.append((len(rows) + 1, label, metric, 0.0, tg_links.get(mint), meta.get('dexUrl')))
         text = build_leaderboard_message(rows, settings.LEADERBOARD_FOOTER_HANDLE)
         target_chat = settings.TRENDING_CHANNEL_TARGET
         try:
