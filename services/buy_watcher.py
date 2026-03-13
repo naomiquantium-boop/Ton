@@ -367,6 +367,43 @@ class BuyWatcher:
         if not event:
             return None, None
         identities = self._identity_set(mint, labels)
+        best_spent: float | None = None
+        best_got: float | None = None
+
+        def _consider_text(text: str):
+            nonlocal best_spent, best_got
+            val = self._normalize_preview_text(text)
+            if '>' not in val:
+                return
+            left, right = [x.strip() for x in val.split('>', 1)]
+            if not any(lbl in right for lbl in identities):
+                return
+            spent_amt, spent_asset = self._parse_amount_and_asset(left)
+            got_amt, got_asset = self._parse_amount_and_asset(right)
+            if spent_amt is None or got_amt is None:
+                return
+            if not any(lbl in got_asset for lbl in identities):
+                return
+            if spent_asset not in {'ton', 'toncoin'}:
+                return
+            if best_spent is None or spent_amt > best_spent:
+                best_spent, best_got = spent_amt, got_amt
+
+        # First pass: scan the whole event blob so exact preview strings like
+        # "10 TON > 470.22 REDO" are captured even if nested oddly.
+        event_blob = self._normalize_preview_text(self._text_blob(event))
+        for ident in sorted(identities, key=len, reverse=True):
+            try:
+                pat = re.compile(rf'(\d+(?:\.\d+)?)\s*ton\s*>\s*(\d+(?:\.\d+)?)\s*{re.escape(ident)}\b')
+            except re.error:
+                continue
+            for m in pat.finditer(event_blob):
+                spent_amt = float(m.group(1))
+                got_amt = float(m.group(2))
+                if best_spent is None or spent_amt > best_spent:
+                    best_spent, best_got = spent_amt, got_amt
+
+        # Second pass: scan individual action fields.
         for action in event.get('actions') or []:
             flat = list(self._flatten_pairs(action))
             blob = ' '.join(v for _, v in flat)
@@ -377,19 +414,9 @@ class BuyWatcher:
             if not is_swap:
                 continue
             for _, value in flat:
-                val = self._normalize_preview_text(value)
-                if '>' not in val:
-                    continue
-                left, right = [x.strip() for x in val.split('>', 1)]
-                if not any(lbl in right for lbl in identities):
-                    continue
-                spent_amt, spent_asset = self._parse_amount_and_asset(left)
-                got_amt, got_asset = self._parse_amount_and_asset(right)
-                if not any(lbl in got_asset for lbl in identities):
-                    continue
-                if spent_asset in {'ton', 'toncoin'} or 'ton' == spent_asset:
-                    return spent_amt, got_amt
-        return None, None
+                _consider_text(value)
+
+        return best_spent, best_got
 
     async def _post_buy(self, mint: str, ev: dict, tgt: dict, ad_text: str | None, ad_link: str | None, ton_price: float):
         meta = await fetch_token_meta(mint); token_name = (meta.get('symbol') or meta.get('name') or mint[:6]);
