@@ -129,7 +129,10 @@ def _norm_tg(v: str | None) -> str | None:
 
 def _is_ca_query_text(text: str | None) -> bool:
     s = (text or '').strip().lower()
-    return s in {'ca', '/ca', 'contract', '/contract', 'address', '/address'}
+    if not s:
+        return False
+    base = s.split('@', 1)[0]
+    return base in {'ca', '/ca', 'contract', '/contract', 'address', '/address'}
 
 async def _reply_group_ca(msg: Message, db: DB):
     if msg.chat.type not in {'group', 'supergroup'}:
@@ -703,6 +706,9 @@ async def token_contract_reply(msg: Message, db: DB):
 @router.message()
 async def txhash_fallback(msg: Message, state: FSMContext, db: DB, rpc: TonAPI):
     text = (msg.text or '').strip()
+    if _is_ca_query_text(text):
+        if await _reply_group_ca(msg, db):
+            return
     if len(text) < 20 or ' ' in text or text.startswith('/'):
         return
     invoice_id = await _latest_pending_invoice_for_user(db, msg.from_user.id)
