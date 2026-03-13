@@ -131,8 +131,8 @@ class BuyWatcher:
 
     def _normalize_preview_text(self, value: str | None) -> str:
         s = str(value or '').lower()
-        for ch in (',', '\u2009', '\xa0', '\n', '\r', '\t'):
-            s = s.replace(ch, ' ')
+        for ch in (',', '\u2009', '\xa0', '\n', '\r', '\t', '→', '➡', '⇒', '⟶', '⟹'):
+            s = s.replace(ch, ' > ' if ch in ('→', '➡', '⇒', '⟶', '⟹') else ' ')
         return ' '.join(s.split())
 
     def _classify_swap_preview(self, value: str | None, labels: list[str]) -> bool | None:
@@ -146,21 +146,21 @@ class BuyWatcher:
         if left_has and not right_has:
             return False
         if right_has and not left_has:
-            # Prefer cases where quote asset is spent to receive tracked token
-            if any(q in left for q in self.QUOTE_HINTS):
-                return True
             return True
         return None
 
     def _classify_from_preview_fields(self, obj: dict | None, labels: list[str]) -> bool | None:
         if not obj:
             return None
+        explicit = None
         for path, value in self._flatten_pairs(obj):
-            if any(k in path for k in ('preview', 'name', 'description', 'title', 'text')):
+            if any(k in path for k in ('preview', 'name', 'description', 'title', 'text', 'label', 'value')):
                 res = self._classify_swap_preview(value, labels)
-                if res is not None:
-                    return res
-        return None
+                if res is False:
+                    return False
+                if res is True:
+                    explicit = True
+        return explicit
 
     def _event_swap_preview_side(self, event: dict | None, labels: list[str]) -> bool | None:
         if not event or not labels:
@@ -227,6 +227,18 @@ class BuyWatcher:
 
     def _tx_preview_is_buy(self, tx: dict | None, labels: list[str]) -> bool | None:
         return self._classify_from_preview_fields(tx or {}, labels)
+
+    def _explicit_swap_side_anywhere(self, *objs, labels: list[str]) -> bool | None:
+        explicit = None
+        for obj in objs:
+            if not obj:
+                continue
+            res = self._classify_from_preview_fields(obj if isinstance(obj, dict) else {'text': obj}, labels)
+            if res is False:
+                return False
+            if res is True:
+                explicit = True
+        return explicit
 
     async def run_forever(self):
         self._running = True
@@ -311,13 +323,15 @@ class BuyWatcher:
                     tx_preview_buy = self._tx_preview_is_buy(tx, labels)
                 except Exception:
                     tx_preview_buy = None
+                explicit_side = self._explicit_swap_side_anywhere(row, tx, event, labels=labels)
 
                 row = ev.get('row') or {}
                 if self._row_failed_flag(row) or self._looks_explicit_sell(row, tx, event):
                     await self._set_last_sig(conn, mint, sig)
                     continue
 
-                if is_buy is False or tx_preview_buy is False or self._row_looks_like_sell(row):
+                # Narrow sell-only fix: if any parsed swap preview clearly shows the tracked token on the left/input side, skip it.
+                if explicit_side is False or is_buy is False or tx_preview_buy is False or self._row_looks_like_sell(row):
                     await self._set_last_sig(conn, mint, sig)
                     continue
 
