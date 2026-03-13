@@ -77,8 +77,7 @@ def build_buy_message_group(token_symbol, emoji, spent_sol, spent_usd, spent_sym
     lines.append(f'🤍 {_a("Listing", settings.LISTING_URL)} | 📈 {_a("Chart", chart_url or tx_url)}')
     lines.append("")
     lines.append(_ad_line(ad_text, ad_link))
-    return "
-".join(lines)
+    return "\n".join(lines)
 
 def build_buy_message_channel(token_symbol, emoji, spent_sol, spent_usd, spent_symbol="TON", spent_value=None, got_tokens=0.0, buyer="Unknown", tx_url=None, price_usd=None, mcap_usd=None, tg_url=None, ad_text=None, ad_link=None, chart_url=None, **kwargs) -> str:
     title_link = _norm_url(tg_url) or _norm_url(chart_url) or _norm_url(tx_url)
@@ -97,8 +96,7 @@ def build_buy_message_channel(token_symbol, emoji, spent_sol, spent_usd, spent_s
     lines.append(f'🤍 {_a("Listing", settings.LISTING_URL)} | 📈 {_a("Chart", chart_url or tx_url)}')
     lines.append("")
     lines.append(_ad_line(ad_text, ad_link))
-    return "
-".join(lines)
+    return "\n".join(lines)
 
 def build_leaderboard_message(rows: list[tuple], footer_handle: str | None = None) -> str:
     lines = ["🟢 SPYTON TRENDING", ""]
@@ -117,5 +115,4 @@ def build_leaderboard_message(rows: list[tuple], footer_handle: str | None = Non
     lines.append("")
     footer = footer_handle or settings.LEADERBOARD_FOOTER_HANDLE
     lines.append(f"<blockquote>💬 To trend add {footer} in your group</blockquote>")
-    return "
-".join(lines)
+    return "\n".join(lines)
