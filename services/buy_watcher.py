@@ -180,15 +180,43 @@ class BuyWatcher:
             text_blob = ' '.join(v for _, v in flat)
             if status in {'failed', 'error', 'aborted'} or any(tag in text_blob for tag in ('failed transaction', 'failed', 'aborted')):
                 return False
-            if 'swap' in atype or 'swap' in text_blob:
+            is_swapish = ('swap' in atype) or ('swap' in text_blob) or any('jetton_master_in' in path or 'jetton_master_out' in path for path, _ in flat)
+            if is_swapish:
                 saw_swap = True
+                in_match = False
+                out_match = False
+                ton_in = 0
+                ton_out = 0
+                for path, value in flat:
+                    if 'jetton_master_in' in path and target in value:
+                        in_match = True
+                    if 'jetton_master_out' in path and target in value:
+                        out_match = True
+                    if path.endswith('ton_in'):
+                        try:
+                            ton_in = max(ton_in, int(str(value).replace('_', '').replace(',', '').strip() or '0'))
+                        except Exception:
+                            pass
+                    if path.endswith('ton_out'):
+                        try:
+                            ton_out = max(ton_out, int(str(value).replace('_', '').replace(',', '').strip() or '0'))
+                        except Exception:
+                            pass
+                if in_match and not out_match:
+                    return False
+                if out_match and not in_match:
+                    return True
+                if in_match and ton_out > 0 and not out_match:
+                    return False
+                if out_match and ton_in > 0 and not in_match:
+                    return True
             for path, value in flat:
                 has_target = (target in value) or (target in path)
                 if not has_target:
                     continue
-                if any(tag in path for tag in ('amount_out', 'jetton_out', 'token_out', 'asset_out', 'out', 'receive', 'received', 'destination', 'to')):
+                if any(tag in path for tag in ('amount_out', 'jetton_out', 'token_out', 'asset_out', 'receive', 'received', 'destination')):
                     buy_score += 3
-                if any(tag in path for tag in ('amount_in', 'jetton_in', 'token_in', 'asset_in', 'in', 'send', 'sent', 'source', 'from', 'sender', 'offer')):
+                if any(tag in path for tag in ('amount_in', 'jetton_in', 'token_in', 'asset_in', 'send', 'sent', 'source', 'offer')):
                     sell_score += 3
             if target in text_blob:
                 if any(tag in text_blob for tag in ('sell', 'sold', 'dedustswappexternal', 'swap jetton for ton', 'jetton->ton')):
@@ -196,7 +224,7 @@ class BuyWatcher:
                 if any(tag in text_blob for tag in ('buy', 'bought', 'swap ton for jetton', 'ton->jetton')):
                     buy_score += 2
         if saw_swap:
-            if sell_score >= buy_score and sell_score > 0:
+            if sell_score > buy_score and sell_score > 0:
                 return False
             if buy_score > sell_score and buy_score > 0:
                 return True
