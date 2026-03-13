@@ -132,7 +132,7 @@ def _is_ca_query_text(text: str | None) -> bool:
     if not s:
         return False
     base = s.split('@', 1)[0]
-    return base in {'ca', '/ca', 'contract', '/contract', 'address', '/address'} or base.startswith('/ca') or base.startswith('/contract') or base.startswith('/address')
+    return base in {'ca', '/ca', 'contract', '/contract', 'address', '/address'}
 
 async def _reply_group_ca(msg: Message, db: DB):
     if msg.chat.type not in {'group', 'supergroup'}:
@@ -146,6 +146,21 @@ async def _reply_group_ca(msg: Message, db: DB):
         return True
     await msg.reply(f"Symbol: {row['label']}\n{row['token_mint']}")
     return True
+
+@router.message(StateFilter('*'), Command('ca'))
+async def early_token_contract_reply_cmd(msg: Message, db: DB):
+    if msg.chat.type not in {"group", "supergroup"}:
+        return
+    if await _reply_group_ca(msg, db):
+        return
+
+@router.message(StateFilter('*'), F.text.func(_is_ca_query_text))
+async def early_token_contract_reply(msg: Message, db: DB):
+    if msg.chat.type not in {"group", "supergroup"}:
+        return
+    if await _reply_group_ca(msg, db):
+        return
+
 async def _tokens(db: DB) -> list[tuple[str, str]]:
     conn = await db.connect()
     cur = await conn.execute("SELECT mint, COALESCE(symbol, name, mint) AS label FROM tracked_tokens ORDER BY created_at DESC LIMIT 50")
@@ -678,30 +693,6 @@ async def status(msg: Message, db: DB):
     cur = await conn.execute("SELECT COUNT(*) FROM tracked_tokens WHERE force_trending=1 OR trend_until_ts>?", (int(time.time()),)); trending = (await cur.fetchone())[0]
     await conn.close(); await msg.reply(f'Tracked tokens: {tokens}\nChannel enabled: {enabled}\nTrending forced/live: {trending}\nPending invoices: {pending}')
 
-
-@router.message(StateFilter('*'), Command('ca'))
-async def token_contract_reply_cmd(msg: Message, db: DB):
-    if msg.chat.type not in {"group", "supergroup"}:
-        return
-    conn = await db.connect()
-    cur = await conn.execute("SELECT token_mint, COALESCE(NULLIF(symbol,''), NULLIF(name,''), token_mint) AS label FROM group_settings LEFT JOIN tracked_tokens ON tracked_tokens.mint=group_settings.token_mint WHERE group_id=? AND is_active=1 ORDER BY group_settings.id DESC LIMIT 1", (msg.chat.id,))
-    row = await cur.fetchone()
-    await conn.close()
-    if not row:
-        return await msg.reply('No token added for this group yet.')
-    await msg.reply(f"Symbol: {row['label']}\n{row['token_mint']}")
-
-@router.message(StateFilter("*"), F.text.func(lambda t: bool(t and t.strip().lower() in {"ca", "contract", "address"})))
-async def token_contract_reply(msg: Message, db: DB):
-    if msg.chat.type not in {"group", "supergroup"}:
-        return
-    conn = await db.connect()
-    cur = await conn.execute("SELECT token_mint, COALESCE(NULLIF(symbol,''), NULLIF(name,''), token_mint) AS label FROM group_settings LEFT JOIN tracked_tokens ON tracked_tokens.mint=group_settings.token_mint WHERE group_id=? AND is_active=1 ORDER BY group_settings.id DESC LIMIT 1", (msg.chat.id,))
-    row = await cur.fetchone()
-    await conn.close()
-    if not row:
-        return await msg.reply('No token added for this group yet.')
-    await msg.reply(f"Symbol: {row['label']}\n{row['token_mint']}")
 
 @router.message()
 async def txhash_fallback(msg: Message, state: FSMContext, db: DB, rpc: TonAPI):
