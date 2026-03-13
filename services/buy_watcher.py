@@ -161,99 +161,77 @@ class BuyWatcher:
                 if res is True:
                     explicit = True
         return explicit
-    def _event_action_is_buy(self, event: dict | None, mint: str, labels: list[str] | None = None) -> bool | None:
-        if not event:
-            return None
-        flat_event = list(self._flatten_pairs(event))
-        event_blob = ' '.join(v for _, v in flat_event)
-        if any(tag in event_blob for tag in ('failed transaction', 'failed', 'aborted', 'bounce', 'bounced')):
-            return False
-        actions = event.get('actions') or []
+
+    def _identity_set(self, mint: str, labels: list[str] | None = None) -> set[str]:
         identities = {str(mint).lower().strip()}
         for lbl in (labels or []):
             s = str(lbl or '').lower().strip()
             if s and len(s) >= 2:
                 identities.add(s)
+        return {x for x in identities if x}
 
-        def preview_matches(preview: dict | None) -> bool:
-            if not isinstance(preview, dict):
-                return False
-            vals = []
-            for key in ('address', 'name', 'symbol', 'description'):
-                v = str(preview.get(key) or '').lower().strip()
-                if v:
-                    vals.append(v)
-            for ident in identities:
-                for v in vals:
-                    if ident == v or ident in v or v in ident:
-                        return True
+    def _match_identity(self, value: str | None, identities: set[str]) -> bool:
+        v = str(value or '').lower().strip()
+        if not v:
             return False
-
-        saw_swap = False
-        buy_score = 0
-        sell_score = 0
-        for action in actions:
-            atype = str(action.get('type') or action.get('__typename') or '').lower()
-            status = str(action.get('status') or '').lower()
-            flat = list(self._flatten_pairs(action))
-            text_blob = ' '.join(v for _, v in flat)
-            if status in {'failed', 'error', 'aborted'} or any(tag in text_blob for tag in ('failed transaction', 'failed', 'aborted')):
-                return False
-            swap_obj = action.get('JettonSwap') if isinstance(action.get('JettonSwap'), dict) else action
-            is_swapish = ('swap' in atype) or ('swap' in text_blob) or any('jetton_master_in' in path or 'jetton_master_out' in path for path, _ in flat)
-            if is_swapish:
-                saw_swap = True
-                in_preview = swap_obj.get('jetton_master_in') if isinstance(swap_obj, dict) else None
-                out_preview = swap_obj.get('jetton_master_out') if isinstance(swap_obj, dict) else None
-                in_match = preview_matches(in_preview)
-                out_match = preview_matches(out_preview)
-                ton_in = 0
-                ton_out = 0
-                for path, value in flat:
-                    if path.endswith('ton_in'):
-                        try:
-                            ton_in = max(ton_in, int(str(value).replace('_', '').replace(',', '').strip() or '0'))
-                        except Exception:
-                            pass
-                    if path.endswith('ton_out'):
-                        try:
-                            ton_out = max(ton_out, int(str(value).replace('_', '').replace(',', '').strip() or '0'))
-                        except Exception:
-                            pass
-                if in_match and not out_match:
-                    return False
-                if out_match and not in_match:
-                    return True
-                preview_side = self._classify_from_preview_fields(action, list(identities))
-                if preview_side is False:
-                    return False
-                if preview_side is True:
-                    return True
-                if in_match and ton_out > 0 and not out_match:
-                    return False
-                if out_match and ton_in > 0 and not in_match:
-                    return True
-            for path, value in flat:
-                has_target = any(ident in value or ident in path for ident in identities)
-                if not has_target:
-                    continue
-                if any(tag in path for tag in ('amount_out', 'jetton_out', 'token_out', 'asset_out', 'receive', 'received', 'destination')):
-                    buy_score += 3
-                if any(tag in path for tag in ('amount_in', 'jetton_in', 'token_in', 'asset_in', 'send', 'sent', 'source', 'offer')):
-                    sell_score += 3
-            if any(ident in text_blob for ident in identities):
-                if any(tag in text_blob for tag in ('sell', 'sold', 'dedustswappexternal', 'swap jetton for ton', 'jetton->ton')):
-                    sell_score += 2
-                if any(tag in text_blob for tag in ('buy', 'bought', 'swap ton for jetton', 'ton->jetton')):
-                    buy_score += 2
-        if saw_swap:
-            if sell_score > buy_score and sell_score > 0:
-                return False
-            if buy_score > sell_score and buy_score > 0:
+        compact = ''.join(ch for ch in v if ch.isalnum())
+        for ident in identities:
+            if ident == v or ident in v or v in ident:
                 return True
+            ic = ''.join(ch for ch in ident if ch.isalnum())
+            if ic and (ic == compact or ic in compact or compact in ic):
+                return True
+        return False
+
+    def _extract_side_values(self, flat: list[tuple[str, str]], side: str) -> list[str]:
+        tags = {
+            'in': ('jetton_master_in', 'token_in', 'asset_in', 'amount_in', 'offer', 'sell', 'source_token', 'from_token', 'input_token'),
+            'out': ('jetton_master_out', 'token_out', 'asset_out', 'amount_out', 'ask', 'buy', 'destination_token', 'to_token', 'output_token'),
+        }[side]
+        values: list[str] = []
+        for path, value in flat:
+            if any(tag in path for tag in tags):
+                values.append(value)
+        return values
+
+    def _event_swap_direction(self, event: dict | None, mint: str, labels: list[str] | None = None) -> bool | None:
+        if not event:
             return None
+        identities = self._identity_set(mint, labels)
+        explicit = self._classify_from_preview_fields(event, list(identities))
+        if explicit is not None:
+            return explicit
+        for action in event.get('actions') or []:
+            flat = list(self._flatten_pairs(action))
+            blob = ' '.join(v for _, v in flat)
+            atype = str(action.get('type') or action.get('__typename') or '').lower()
+            if 'failed' in blob or 'aborted' in blob or str(action.get('status') or '').lower() in {'failed', 'aborted', 'error'}:
+                return False
+            is_swap = ('swap' in atype) or ('swap tokens' in blob) or any('jetton_master_in' in p or 'jetton_master_out' in p for p, _ in flat)
+            if not is_swap:
+                continue
+            # 1) direct text preview anywhere in the action
+            act_preview = self._classify_from_preview_fields(action, list(identities))
+            if act_preview is not None:
+                return act_preview
+            # 2) structured in/out fields anywhere in the action
+            in_vals = self._extract_side_values(flat, 'in')
+            out_vals = self._extract_side_values(flat, 'out')
+            in_match = any(self._match_identity(v, identities) for v in in_vals)
+            out_match = any(self._match_identity(v, identities) for v in out_vals)
+            if in_match and not out_match:
+                return False
+            if out_match and not in_match:
+                return True
+            # 3) any generic left/right style text line inside the action
+            for _, value in flat:
+                res = self._classify_swap_preview(value, list(identities))
+                if res is not None:
+                    return res
         return None
 
+    def _event_action_is_buy(self, event: dict | None, mint: str, labels: list[str] | None = None) -> bool | None:
+        return self._event_swap_direction(event, mint, labels)
     async def run_forever(self):
         self._running = True
         while self._running:
@@ -348,21 +326,22 @@ class BuyWatcher:
                     await self._set_last_sig(conn, mint, sig)
                     continue
 
-                # Narrow sell-only block: if a parsed swap preview clearly shows the tracked token
-                # on the left/input side, skip it. Otherwise keep the existing buy flow.
-                if preview_side is False:
+                # Clear parsed sell -> skip immediately.
+                if is_buy is False or preview_side is False:
                     await self._set_last_sig(conn, mint, sig)
                     continue
-                if preview_side is True:
+                if is_buy is None and preview_side is True:
                     is_buy = True
-
-                if is_buy is False:
-                    await self._set_last_sig(conn, mint, sig)
-                    continue
 
                 swapish = self._looks_swapish(row, tx, event)
                 row_dir = self._row_transfer_direction(row)
-                if is_buy is not True and not swapish and row_dir is not True:
+                # For swap-like transactions, require an explicit buy classification.
+                # This prevents sells like TOKEN > TON / TOKEN > USDT from slipping through.
+                if swapish and is_buy is not True:
+                    await self._set_last_sig(conn, mint, sig)
+                    continue
+                # For non-swap plain transfers, only allow obvious inbound transfer direction.
+                if not swapish and row_dir is not True:
                     await self._set_last_sig(conn, mint, sig)
                     continue
 
