@@ -5,7 +5,7 @@ import time
 import secrets
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
-from aiogram.filters import Command, CommandObject
+from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
@@ -640,7 +640,7 @@ async def status(msg: Message, db: DB):
     await conn.close(); await msg.reply(f'Tracked tokens: {tokens}\nChannel enabled: {enabled}\nTrending forced/live: {trending}\nPending invoices: {pending}')
 
 
-@router.message(Command('ca'))
+@router.message(StateFilter('*'), Command('ca'))
 async def token_contract_reply_cmd(msg: Message, db: DB):
     if msg.chat.type not in {"group", "supergroup"}:
         return
@@ -652,7 +652,7 @@ async def token_contract_reply_cmd(msg: Message, db: DB):
         return await msg.reply('No token added for this group yet.')
     await msg.reply(f"Symbol: {row['label']}\n{row['token_mint']}")
 
-@router.message(F.text.func(lambda t: bool(t and t.strip().lower() in {"ca", "contract", "address"})))
+@router.message(StateFilter("*"), F.text.func(lambda t: bool(t and t.strip().lower() in {"ca", "contract", "address"})))
 async def token_contract_reply(msg: Message, db: DB):
     if msg.chat.type not in {"group", "supergroup"}:
         return
