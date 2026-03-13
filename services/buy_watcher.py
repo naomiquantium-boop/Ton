@@ -127,13 +127,41 @@ class BuyWatcher:
                 return True
         return False
 
-    def _event_action_is_buy(self, event: dict | None, mint: str) -> bool | None:
+    def _event_swap_preview_side(self, event: dict | None, labels: list[str]) -> bool | None:
+        if not event or not labels:
+            return None
+        labels = [str(x).lower() for x in labels if x]
+        actions = event.get('actions') or []
+        for action in actions:
+            flat = list(self._flatten_pairs(action))
+            text_blob = ' '.join(v for _, v in flat)
+            if 'swap' not in text_blob:
+                continue
+            for path, value in flat:
+                if not any(k in path for k in ('preview', 'name', 'description', 'title', 'text')):
+                    continue
+                val = str(value).lower()
+                if '>' not in val:
+                    continue
+                left, right = [x.strip() for x in val.split('>', 1)]
+                left_has = any(lbl in left for lbl in labels)
+                right_has = any(lbl in right for lbl in labels)
+                if left_has and not right_has:
+                    return False
+                if right_has and not left_has:
+                    return True
+        return None
+
+    def _event_action_is_buy(self, event: dict | None, mint: str, labels: list[str] | None = None) -> bool | None:
         if not event:
             return None
         flat_event = list(self._flatten_pairs(event))
         event_blob = ' '.join(v for _, v in flat_event)
         if any(tag in event_blob for tag in ('failed transaction', 'failed', 'aborted', 'bounce', 'bounced')):
             return False
+        preview_side = self._event_swap_preview_side(event, labels or [])
+        if preview_side is not None:
+            return preview_side
         actions = event.get('actions') or []
         target = str(mint).lower()
         saw_swap = False
@@ -152,17 +180,21 @@ class BuyWatcher:
                 has_target = (target in value) or (target in path)
                 if not has_target:
                     continue
-                if any(tag in path for tag in ('amount_out', 'jetton_out', 'token_out', 'asset_out', 'out', 'receive', 'received', 'destination', 'to')):
+                if any(tag in path for tag in ('amount_out', 'jetton_out', 'token_out', 'asset_out', 'receive', 'received')):
                     buy_score += 3
-                if any(tag in path for tag in ('amount_in', 'jetton_in', 'token_in', 'asset_in', 'in', 'send', 'sent', 'source', 'from', 'sender', 'offer')):
+                if any(tag in path for tag in ('amount_in', 'jetton_in', 'token_in', 'asset_in', 'send', 'sent', 'offer')):
                     sell_score += 3
+                if any(tag in path for tag in ('destination', 'to', 'recipient')) and self._is_poolish(value):
+                    sell_score += 2
+                if any(tag in path for tag in ('source', 'from', 'sender')) and self._is_poolish(value):
+                    buy_score += 2
             if target in text_blob:
-                if any(tag in text_blob for tag in ('sell', 'sold', 'dedustswappexternal', 'swap jetton for ton', 'jetton->ton')):
+                if any(tag in text_blob for tag in ('sell', 'sold', 'swap jetton for ton', 'jetton->ton')):
                     sell_score += 2
                 if any(tag in text_blob for tag in ('buy', 'bought', 'swap ton for jetton', 'ton->jetton')):
                     buy_score += 2
         if saw_swap:
-            if sell_score >= buy_score and sell_score > 0:
+            if sell_score > buy_score and sell_score > 0:
                 return False
             if buy_score > sell_score and buy_score > 0:
                 return True
@@ -218,6 +250,12 @@ class BuyWatcher:
                 continue
             if newest_sig and newest_sig != last_sig and not new_events:
                 await self._set_last_sig(conn, mint, newest_sig)
+            meta_hint = {}
+            try:
+                meta_hint = await fetch_token_meta(mint)
+            except Exception:
+                meta_hint = {}
+            labels = [mint, meta_hint.get('symbol') or '', meta_hint.get('name') or '']
             for ev in new_events:
                 sig = ev['signature']
                 if await self._was_posted(conn, sig):
@@ -237,7 +275,7 @@ class BuyWatcher:
                 is_buy = None
                 try:
                     event = await self.rpc.get_event_by_hash(sig)
-                    is_buy = self._event_action_is_buy(event, mint)
+                    is_buy = self._event_action_is_buy(event, mint, labels)
                 except Exception:
                     event = None
                     is_buy = None
