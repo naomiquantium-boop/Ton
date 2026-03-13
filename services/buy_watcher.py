@@ -9,9 +9,10 @@ from utils.formatter import build_buy_message_group, build_buy_message_channel
 from bot.keyboards import buy_kb
 
 class BuyWatcher:
-    POOL_HINTS = ('dedust', 'ston', 'router', 'pool', 'vault', 'lp', 'amm', 'swap')
+    POOL_HINTS = ('dedust', 'ston', 'ston.fi', 'stonfi', 'router', 'pool', 'vault', 'lp', 'amm', 'swap')
     SWAP_HINTS = ('swap', 'ston', 'ston.fi', 'stonfi', 'dedust', 'router', 'dex')
     SELL_HINTS = ('sell', 'sold', 'swap jetton for ton', 'jetton->ton', 'swapexactjettonsforton')
+    QUOTE_HINTS = (' ton', 'ton ', 'usdt', 'usd₮', 'usd', 'usdc')
 
     def __init__(self, bot, db, rpc):
         self.bot = bot; self.db = db; self.rpc = rpc; self._running = False; self._last_ton_price = 3.0; self._chat_type_cache: Dict[int, str] = {}
@@ -127,29 +128,52 @@ class BuyWatcher:
                 return True
         return False
 
+
+    def _normalize_preview_text(self, value: str | None) -> str:
+        s = str(value or '').lower()
+        for ch in (',', '\u2009', '\xa0', '\n', '\r', '\t'):
+            s = s.replace(ch, ' ')
+        return ' '.join(s.split())
+
+    def _classify_swap_preview(self, value: str | None, labels: list[str]) -> bool | None:
+        val = self._normalize_preview_text(value)
+        if '>' not in val:
+            return None
+        left, right = [x.strip() for x in val.split('>', 1)]
+        labels = [str(x).lower().strip() for x in labels if x and str(x).strip()]
+        left_has = any(lbl in left for lbl in labels)
+        right_has = any(lbl in right for lbl in labels)
+        if left_has and not right_has:
+            return False
+        if right_has and not left_has:
+            # Prefer cases where quote asset is spent to receive tracked token
+            if any(q in left for q in self.QUOTE_HINTS):
+                return True
+            return True
+        return None
+
+    def _classify_from_preview_fields(self, obj: dict | None, labels: list[str]) -> bool | None:
+        if not obj:
+            return None
+        for path, value in self._flatten_pairs(obj):
+            if any(k in path for k in ('preview', 'name', 'description', 'title', 'text')):
+                res = self._classify_swap_preview(value, labels)
+                if res is not None:
+                    return res
+        return None
+
     def _event_swap_preview_side(self, event: dict | None, labels: list[str]) -> bool | None:
         if not event or not labels:
             return None
-        labels = [str(x).lower() for x in labels if x]
         actions = event.get('actions') or []
         for action in actions:
             flat = list(self._flatten_pairs(action))
             text_blob = ' '.join(v for _, v in flat)
             if 'swap' not in text_blob:
                 continue
-            for path, value in flat:
-                if not any(k in path for k in ('preview', 'name', 'description', 'title', 'text')):
-                    continue
-                val = str(value).lower()
-                if '>' not in val:
-                    continue
-                left, right = [x.strip() for x in val.split('>', 1)]
-                left_has = any(lbl in left for lbl in labels)
-                right_has = any(lbl in right for lbl in labels)
-                if left_has and not right_has:
-                    return False
-                if right_has and not left_has:
-                    return True
+            res = self._classify_from_preview_fields(action, labels)
+            if res is not None:
+                return res
         return None
 
     def _event_action_is_buy(self, event: dict | None, mint: str, labels: list[str] | None = None) -> bool | None:
@@ -200,6 +224,9 @@ class BuyWatcher:
                 return True
             return None
         return None
+
+    def _tx_preview_is_buy(self, tx: dict | None, labels: list[str]) -> bool | None:
+        return self._classify_from_preview_fields(tx or {}, labels)
 
     async def run_forever(self):
         self._running = True
@@ -273,27 +300,38 @@ class BuyWatcher:
                     continue
                 event = None
                 is_buy = None
+                tx_preview_buy = None
                 try:
                     event = await self.rpc.get_event_by_hash(sig)
                     is_buy = self._event_action_is_buy(event, mint, labels)
                 except Exception:
                     event = None
                     is_buy = None
+                try:
+                    tx_preview_buy = self._tx_preview_is_buy(tx, labels)
+                except Exception:
+                    tx_preview_buy = None
 
                 row = ev.get('row') or {}
                 if self._row_failed_flag(row) or self._looks_explicit_sell(row, tx, event):
                     await self._set_last_sig(conn, mint, sig)
                     continue
 
-                if is_buy is False:
+                if is_buy is False or tx_preview_buy is False or self._row_looks_like_sell(row):
                     await self._set_last_sig(conn, mint, sig)
                     continue
 
                 swapish = self._looks_swapish(row, tx, event)
                 row_dir = self._row_transfer_direction(row)
-                if is_buy is not True and not swapish and row_dir is not True:
-                    await self._set_last_sig(conn, mint, sig)
-                    continue
+                positive_buy = (is_buy is True) or (tx_preview_buy is True)
+                if swapish:
+                    if not positive_buy and row_dir is not True:
+                        await self._set_last_sig(conn, mint, sig)
+                        continue
+                else:
+                    if not positive_buy and row_dir is not True:
+                        await self._set_last_sig(conn, mint, sig)
+                        continue
 
                 posted = await self._post_buy(mint, ev, tgt, ad_text, ad_link, ton_price)
                 if posted:
