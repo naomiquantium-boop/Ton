@@ -640,28 +640,17 @@ async def status(msg: Message, db: DB):
     await conn.close(); await msg.reply(f'Tracked tokens: {tokens}\nChannel enabled: {enabled}\nTrending forced/live: {trending}\nPending invoices: {pending}')
 
 
-
 @router.message(F.text.func(lambda t: bool(t and t.strip().lower() in {"ca", "contract", "address"})))
 async def token_contract_reply(msg: Message, db: DB):
-    if msg.chat.type not in ("group", "supergroup"):
+    if msg.chat.type not in {"group", "supergroup"}:
         return
-    mint = await _group_token(db, msg.chat.id)
-    if not mint:
-        return await msg.reply('No token added for this group yet.')
     conn = await db.connect()
-    cur = await conn.execute("SELECT symbol, name FROM tracked_tokens WHERE mint=?", (mint,))
+    cur = await conn.execute("SELECT token_mint, COALESCE(NULLIF(symbol,''), NULLIF(name,''), token_mint) AS label FROM group_settings LEFT JOIN tracked_tokens ON tracked_tokens.mint=group_settings.token_mint WHERE group_id=? AND is_active=1 ORDER BY group_settings.id DESC LIMIT 1", (msg.chat.id,))
     row = await cur.fetchone()
     await conn.close()
-    label = None
-    if row:
-        for v in (row['symbol'], row['name']):
-            if v and not str(v).startswith(("EQ", "UQ", "kQ", "0:")):
-                label = v
-                break
-    if label:
-        await msg.reply(f"Symbol: {label}\n<code>{mint}</code>", parse_mode='HTML')
-    else:
-        await msg.reply(f"<code>{mint}</code>", parse_mode='HTML')
+    if not row:
+        return await msg.reply('No token added for this group yet.')
+    await msg.reply(f"Symbol: {row['label']}\n{row['token_mint']}")
 
 @router.message()
 async def txhash_fallback(msg: Message, state: FSMContext, db: DB, rpc: TonAPI):
