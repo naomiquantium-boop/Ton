@@ -5,15 +5,24 @@ import httpx
 
 
 class TonAPI:
-    def __init__(self, rpc_url: str, timeout: float = 20.0, api_key: str = ""):
+    def __init__(self, rpc_url: str, timeout: float = 20.0, api_key: str = "", tonapi_base: str | None = None, tonapi_key: str | None = None):
         self.rpc_url = rpc_url.rstrip("/")
         self.client = httpx.AsyncClient(timeout=timeout)
         self.api_key = api_key
+        self.tonapi_base = (tonapi_base or "https://tonapi.io/v2").rstrip("/")
+        self.tonapi_key = tonapi_key if tonapi_key is not None else api_key
 
     def _headers(self) -> dict[str, str]:
         h = {}
         if self.api_key:
             h["X-API-Key"] = self.api_key
+        return h
+
+    def _tonapi_headers(self) -> dict[str, str]:
+        h = {}
+        if self.tonapi_key:
+            h["Authorization"] = f"Bearer {self.tonapi_key}"
+            h["X-API-Key"] = self.tonapi_key
         return h
 
     @staticmethod
@@ -84,3 +93,24 @@ class TonAPI:
 
     async def close(self):
         await self.client.aclose()
+    async def get_event_by_hash(self, tx_hash: str) -> dict | None:
+        if not tx_hash:
+            return None
+        candidates = []
+        seen = set()
+        for cand in (str(tx_hash).strip(), self.tx_hash_to_hex(tx_hash) or None):
+            if cand and cand not in seen:
+                seen.add(cand)
+                candidates.append(cand)
+        for cand in candidates:
+            try:
+                r = await self.client.get(f"{self.tonapi_base}/events/{cand}", headers=self._tonapi_headers())
+                if r.status_code == 404:
+                    continue
+                r.raise_for_status()
+                data = r.json()
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                continue
+        return None

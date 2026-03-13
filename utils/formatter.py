@@ -96,9 +96,13 @@ def build_leaderboard_message(rows: list[tuple], footer_handle: str | None = Non
             rank, label, metric, pct, chart_url = row[:5]
             tg_url = None
         sign = "+" if pct > 0 else ""
+        if abs(pct) < 10 and abs(pct) > 0:
+            pct_text = f"{sign}{pct:.1f}%"
+        else:
+            pct_text = f"{sign}{pct:.0f}%"
         token_part = _a(label, tg_url) if tg_url else label
         metric_part = _a(metric, chart_url or settings.LISTING_URL)
-        lines.append(f'{RANK_EMOJIS.get(rank, str(rank))} {token_part} | {metric_part} | {sign}{pct:.0f}%')
+        lines.append(f'{RANK_EMOJIS.get(rank, str(rank))} {token_part} | {metric_part} | {pct_text}')
     lines.append("")
     footer = footer_handle or settings.LEADERBOARD_FOOTER_HANDLE
     lines.append(f"<blockquote>💬 To trend add {footer} in your group</blockquote>")
