@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, time
+import asyncio, time, re
 from typing import Dict
 from bot.config import settings
 from services.token_meta import fetch_token_meta
@@ -230,49 +230,6 @@ class BuyWatcher:
                     return res
         return None
 
-
-    def _parse_first_amount(self, text: str) -> float | None:
-        import re
-        s = str(text or '').replace(' ', ' ').replace(' ', ' ')
-        m = re.search(r'([0-9][0-9,]*(?:\.[0-9]+)?)', s)
-        if not m:
-            return None
-        try:
-            return float(m.group(1).replace(',', ''))
-        except Exception:
-            return None
-
-    def _extract_exact_buy_amounts(self, event: dict | None, mint: str, labels: list[str] | None = None) -> tuple[float | None, float | None]:
-        if not event:
-            return (None, None)
-        identities = list(self._identity_set(mint, labels))
-        best_spent_ton = None
-        best_got_tokens = None
-        for action in event.get('actions') or []:
-            flat = list(self._flatten_pairs(action))
-            blob = ' '.join(v for _, v in flat)
-            atype = str(action.get('type') or action.get('__typename') or '').lower()
-            is_swap = ('swap' in atype) or ('swap tokens' in blob) or any('jetton_master_in' in p or 'jetton_master_out' in p for p, _ in flat)
-            if not is_swap:
-                continue
-            for _, value in flat:
-                norm = self._normalize_preview_text(value)
-                if '>' not in norm:
-                    continue
-                left, right = [x.strip() for x in norm.split('>', 1)]
-                left_has_token = any(lbl in left for lbl in identities)
-                right_has_token = any(lbl in right for lbl in identities)
-                if right_has_token and not left_has_token:
-                    got = self._parse_first_amount(right)
-                    spent = self._parse_first_amount(left) if 'ton' in left else None
-                    if got and got > 0:
-                        best_got_tokens = got
-                    if spent and spent > 0:
-                        best_spent_ton = spent
-                    if best_spent_ton is not None or best_got_tokens is not None:
-                        return (best_spent_ton, best_got_tokens)
-        return (best_spent_ton, best_got_tokens)
-
     def _event_action_is_buy(self, event: dict | None, mint: str, labels: list[str] | None = None) -> bool | None:
         return self._event_swap_direction(event, mint, labels)
     async def run_forever(self):
@@ -388,17 +345,51 @@ class BuyWatcher:
                     await self._set_last_sig(conn, mint, sig)
                     continue
 
-                exact_spent_ton, exact_got_tokens = self._extract_exact_buy_amounts(event, mint, labels)
-                if exact_spent_ton is not None:
-                    ev['exact_spent_ton'] = exact_spent_ton
-                if exact_got_tokens is not None and exact_got_tokens > 0:
-                    ev['got_tokens'] = exact_got_tokens
                 ev['event'] = event
                 posted = await self._post_buy(mint, ev, tgt, ad_text, ad_link, ton_price)
                 if posted:
                     await self._mark_posted(conn, sig)
                 await self._set_last_sig(conn, mint, sig)
         await conn.close()
+
+    def _parse_amount_and_asset(self, side: str) -> tuple[float | None, str]:
+        s = str(side or '').strip().replace(',', '')
+        m = re.search(r'([-+]?\d+(?:\.\d+)?)\s*([A-Za-z0-9_\-$₮]+)', s)
+        if not m:
+            return None, s.lower()
+        try:
+            amt = float(m.group(1))
+        except Exception:
+            amt = None
+        return amt, m.group(2).lower()
+
+    def _extract_exact_buy_amounts(self, event: dict | None, mint: str, labels: list[str] | None = None) -> tuple[float | None, float | None]:
+        if not event:
+            return None, None
+        identities = self._identity_set(mint, labels)
+        for action in event.get('actions') or []:
+            flat = list(self._flatten_pairs(action))
+            blob = ' '.join(v for _, v in flat)
+            atype = str(action.get('type') or action.get('__typename') or '').lower()
+            if 'failed' in blob or 'aborted' in blob or str(action.get('status') or '').lower() in {'failed', 'aborted', 'error'}:
+                continue
+            is_swap = ('swap' in atype) or ('swap tokens' in blob) or any('jetton_master_in' in p or 'jetton_master_out' in p for p, _ in flat)
+            if not is_swap:
+                continue
+            for _, value in flat:
+                val = self._normalize_preview_text(value)
+                if '>' not in val:
+                    continue
+                left, right = [x.strip() for x in val.split('>', 1)]
+                if not any(lbl in right for lbl in identities):
+                    continue
+                spent_amt, spent_asset = self._parse_amount_and_asset(left)
+                got_amt, got_asset = self._parse_amount_and_asset(right)
+                if not any(lbl in got_asset for lbl in identities):
+                    continue
+                if spent_asset in {'ton', 'toncoin'} or 'ton' == spent_asset:
+                    return spent_amt, got_amt
+        return None, None
 
     async def _post_buy(self, mint: str, ev: dict, tgt: dict, ad_text: str | None, ad_link: str | None, ton_price: float):
         meta = await fetch_token_meta(mint); token_name = (meta.get('symbol') or meta.get('name') or mint[:6]);
@@ -411,11 +402,14 @@ class BuyWatcher:
                 await connm.commit(); await connm.close()
         except Exception:
             pass
-        got_tokens = float(ev.get('got_tokens') or 0.0); buyer = ev.get('buyer') or 'Unknown'; spent_usd = (float(meta.get('priceUsd') or 0.0) * got_tokens) if meta.get('priceUsd') is not None else 0.0; spent_ton = float(ev.get('exact_spent_ton') or 0.0);
-        if spent_ton <= 0:
-            spent_ton = (spent_usd / ton_price) if spent_usd and ton_price else 0.0
-        elif ton_price:
-            spent_usd = spent_ton * ton_price
+        got_tokens = float(ev.get('got_tokens') or 0.0); buyer = ev.get('buyer') or 'Unknown';
+        exact_spent_ton, exact_got_tokens = self._extract_exact_buy_amounts(ev.get('event'), mint, [mint, meta.get('symbol') or '', meta.get('name') or ''])
+        if exact_got_tokens and exact_got_tokens > 0:
+            got_tokens = exact_got_tokens
+        spent_usd = (float(meta.get('priceUsd') or 0.0) * got_tokens) if meta.get('priceUsd') is not None else 0.0
+        spent_ton = exact_spent_ton if exact_spent_ton and exact_spent_ton > 0 else ((spent_usd / ton_price) if spent_usd and ton_price else 0.0)
+        if exact_spent_ton and exact_spent_ton > 0 and ton_price:
+            spent_usd = exact_spent_ton * ton_price
         if spent_ton < float(settings.MIN_BUY_DEFAULT_TON): return False
         now_ts = int(time.time())
         try:
