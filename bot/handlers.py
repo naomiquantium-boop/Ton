@@ -284,6 +284,12 @@ async def _watch_invoice(bot, db: DB, rpc: TonAPI, chat_id: int, invoice_id: int
             pass
         await asyncio.sleep(20)
 
+@router.message(StateFilter("*"), F.text.func(_is_ca_query_text))
+async def early_group_ca_router(msg: Message, db: DB):
+    if await _reply_group_ca(msg, db):
+        return
+
+
 @router.message(Command('start'))
 async def start(msg: Message, state: FSMContext, db: DB):
     await state.clear()
