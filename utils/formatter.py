@@ -11,28 +11,24 @@ def short_addr(a: str, left: int = 4, right: int = 4) -> str:
         return a
     return f"{a[:left]}...{a[-right:]}"
 
-def emoji_bar(emoji: str, count: int = 3) -> str:
-    return " ".join([emoji] * max(1, count))
-
 def fmt_num(x: float, decimals: int = 2) -> str:
     try:
         return f"{x:,.{decimals}f}"
     except Exception:
         return str(x)
 
-def _fmt_token_amount(x: float) -> str:
+def _fmt_compact_int(n: Optional[int]) -> str:
+    if n is None:
+        return "—"
     try:
-        return f"{float(x):,.2f}"
+        x = float(n)
     except Exception:
-        return str(x)
-
-def _fmt_usd(x: float | None, decimals: int = 0) -> str | None:
-    if x is None:
-        return None
-    try:
-        return f"${float(x):,.{decimals}f}"
-    except Exception:
-        return None
+        return "—"
+    if x >= 1_000_000:
+        return f"{x/1_000_000:.2f}".rstrip("0").rstrip(".") + "M"
+    if x >= 1_000:
+        return f"{x/1_000:.2f}".rstrip("0").rstrip(".") + "K"
+    return f"{int(x):,}"
 
 def _norm_url(url: Optional[str]) -> Optional[str]:
     if not url:
@@ -64,73 +60,45 @@ def _ad_line(ad_text: str | None, ad_link: str | None = None) -> str:
         return f"ad: {ad_text}"
     return _default_ad_line()
 
+def _checks(count: int = 26) -> str:
+    return " ".join(["✅"] * max(1, count))
+
 def _strength_count(spent_ton: float) -> int:
     try:
-        return max(3, min(26, int(round(float(spent_ton) / 4))))
+        return max(4, min(26, int(round(float(spent_ton) / 4.0))))
     except Exception:
-        return 8
+        return 12
+
+def _buy_style(token_symbol, spent_value, spent_usd, got_tokens, buyer, tx_url, price_usd=None, liquidity_usd=None, mcap_usd=None, holders=None, tg_url=None, ad_text=None, ad_link=None, chart_url=None, include_holders=False):
+    title = token_symbol or 'TOKEN'
+    header = f'| <a href="{_norm_url(tg_url) or _norm_url(chart_url) or _norm_url(tx_url) or ""}"><b>{title}</b></a> Buy!' if (_norm_url(tg_url) or _norm_url(chart_url) or _norm_url(tx_url)) else f'| <b>{title}</b> Buy!'
+    usd_part = f" (${fmt_num(spent_usd, 2)})" if spent_usd and spent_usd > 0 else ""
+    buyer_short = short_addr(str(buyer))
+    buyer_html = _a(buyer_short, tx_url)
+    token_html = _a(token_symbol, tg_url) if token_symbol else token_symbol
+    lines = [header, '', _checks(_strength_count(float(spent_value or 0))), '']
+    lines.append(f'◈ <b>{fmt_num(float(spent_value or 0), 2)} TON{usd_part}</b>')
+    lines.append(f'🔁 <b>{fmt_num(float(got_tokens or 0), 2)} {token_html}</b>')
+    if include_holders and holders is not None:
+        lines.append(f'🔁 {_fmt_compact_int(int(holders))} Holders')
+    lines.append(f'👤 {buyer_html} | {_a("Txn", tx_url)}')
+    if price_usd is not None:
+        lines.append(f'💵 Price: ${fmt_num(float(price_usd), 6)}')
+    if liquidity_usd is not None:
+        lines.append(f'💧 Liquidity: ${fmt_num(float(liquidity_usd), 0)}')
+    if mcap_usd is not None:
+        lines.append(f'💵 MCap: ${fmt_num(float(mcap_usd), 0)}')
+    link_parts = [_a('TX', tx_url), _a('GT', chart_url), _a('DexS', chart_url), _a('Telegram', tg_url), _a('Trending', settings.BOOK_TRENDING_URL)]
+    lines += ['', ' | '.join([p for p in link_parts if p]), '', _ad_line(ad_text, ad_link)]
+    RETURN_PLACEHOLDER
 
 def build_buy_message_group(token_symbol, emoji, spent_sol, spent_usd, spent_symbol="TON", spent_value=None, got_tokens=0.0, buyer="Unknown", tx_url=None, price_usd=None, mcap_usd=None, tg_url=None, ad_text=None, ad_link=None, chart_url=None, liquidity_usd=None, holders=None, **kwargs) -> str:
-    title_link = _norm_url(tg_url) or _norm_url(chart_url) or _norm_url(tx_url)
-    header = f'<a href="{title_link}"><b>{token_symbol}</b></a> Buy!' if title_link else f'<b>{token_symbol}</b> Buy!'
-    display_value = float(spent_value if spent_value is not None else spent_sol or 0)
-    lines = [header, emoji_bar(emoji or "🟢", _strength_count(display_value)), ""]
-    lines.append(f"Spent: <b>{fmt_num(display_value, 2)} {spent_symbol}</b>")
-    lines.append(f"Got: <b>{_fmt_token_amount(float(got_tokens or 0))} {token_symbol}</b>")
-    lines.append("")
-    lines.append(f"{_a(short_addr(str(buyer)), tx_url)} | {_a('Txn', tx_url)}")
-    lines.append("")
-    if price_usd is not None:
-        lines.append(f"Price: {_fmt_usd(price_usd, 6)}")
-    if liquidity_usd is not None:
-        lines.append(f"Liquidity: {_fmt_usd(liquidity_usd, 0)}")
-    if mcap_usd is not None:
-        lines.append(f"MCap: {_fmt_usd(mcap_usd, 0)}")
-    if holders is not None:
-        lines.append(f"Holders: {fmt_num(float(holders), 0)}")
-    parts = []
-    if tx_url:
-        parts.append(_a('TX', tx_url))
-    if chart_url:
-        parts.append(_a('DexS', chart_url))
-    if tg_url:
-        parts.append(_a('Telegram', tg_url))
-    parts.append(_a('Trending', settings.BOOK_TRENDING_URL))
-    lines.append(" | ".join(parts))
-    lines.append("")
-    lines.append(_ad_line(ad_text, ad_link))
-    return "\n".join(lines)
+    display_value = spent_value if spent_value is not None else spent_sol
+    return _buy_style(token_symbol, display_value, spent_usd, got_tokens, buyer, tx_url, price_usd=price_usd, liquidity_usd=liquidity_usd, mcap_usd=mcap_usd, holders=holders, tg_url=tg_url, ad_text=ad_text, ad_link=ad_link, chart_url=chart_url, include_holders=True)
 
 def build_buy_message_channel(token_symbol, emoji, spent_sol, spent_usd, spent_symbol="TON", spent_value=None, got_tokens=0.0, buyer="Unknown", tx_url=None, price_usd=None, mcap_usd=None, tg_url=None, ad_text=None, ad_link=None, chart_url=None, liquidity_usd=None, holders=None, **kwargs) -> str:
-    title_link = _norm_url(tg_url) or _norm_url(chart_url) or _norm_url(tx_url)
-    header = f'| <a href="{title_link}"><b>{token_symbol}</b></a> Buy!' if title_link else f'| <b>{token_symbol}</b> Buy!'
-    display_value = float(spent_value if spent_value is not None else spent_sol or 0)
-    usd_part = f" (${fmt_num(spent_usd, 2)})" if spent_usd else ""
-    lines = [header, emoji_bar(emoji or "🟢", _strength_count(display_value)), ""]
-    lines.append(f"◈ <b>{fmt_num(display_value, 2)} {spent_symbol}{usd_part}</b>")
-    lines.append(f"🔁 <b>{_fmt_token_amount(float(got_tokens or 0))} {_a(token_symbol, tg_url)}</b>")
-    lines.append(f"👤 {_a(short_addr(str(buyer)), tx_url)} | {_a('Txn', tx_url)}")
-    if price_usd is not None:
-        lines.append(f"💵 Price: {_fmt_usd(price_usd, 6)}")
-    if liquidity_usd is not None:
-        lines.append(f"💧 Liquidity: {_fmt_usd(liquidity_usd, 0)}")
-    if mcap_usd is not None:
-        lines.append(f"💵 MCap: {_fmt_usd(mcap_usd, 0)}")
-    if holders is not None:
-        lines.append(f"👥 Holders: {fmt_num(float(holders), 0)}")
-    parts = []
-    if tx_url:
-        parts.append(_a('TX', tx_url))
-    if chart_url:
-        parts.append(_a('GT', chart_url))
-        parts.append(_a('DexS', chart_url))
-    if tg_url:
-        parts.append(_a('Telegram', tg_url))
-    parts.append(_a('Trending', settings.BOOK_TRENDING_URL))
-    lines.append(" | ".join(parts))
-    lines.append("")
-    lines.append(_ad_line(ad_text, ad_link))
-    return "\n".join(lines)
+    display_value = spent_value if spent_value is not None else spent_sol
+    return _buy_style(token_symbol, display_value, spent_usd, got_tokens, buyer, tx_url, price_usd=price_usd, liquidity_usd=liquidity_usd, mcap_usd=mcap_usd, holders=holders, tg_url=tg_url, ad_text=ad_text, ad_link=ad_link, chart_url=chart_url, include_holders=True)
 
 def build_leaderboard_message(rows: list[tuple], footer_handle: str | None = None) -> str:
     lines = ["🟢 SPYTON TRENDING", ""]
@@ -149,4 +117,4 @@ def build_leaderboard_message(rows: list[tuple], footer_handle: str | None = Non
     lines.append("")
     footer = footer_handle or settings.LEADERBOARD_FOOTER_HANDLE
     lines.append(f"<blockquote>💬 To trend add {footer} in your group</blockquote>")
-    return "\n".join(lines)
+    RETURN_PLACEHOLDER
