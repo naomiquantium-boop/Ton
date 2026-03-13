@@ -50,7 +50,7 @@ async def run():
     await _migrate(db)
     bot = Bot(token=settings.BOT_TOKEN, parse_mode=ParseMode.HTML)
     dp = Dispatcher(storage=MemoryStorage())
-    rpc = TonAPI(settings.TONCENTER_API_BASE, timeout=float(settings.TON_API_TIMEOUT), api_key=settings.TONCENTER_API_KEY)
+    rpc = TonAPI(settings.TONCENTER_API_BASE, timeout=float(settings.TON_API_TIMEOUT), api_key=settings.TONCENTER_API_KEY, tonapi_base=settings.TONAPI_BASE, tonapi_key=settings.TONAPI_KEY)
     dp.workflow_data.update({"db": db, "rpc": rpc})
     dp.include_router(handlers_router)
     dp.include_router(wizard_router)
