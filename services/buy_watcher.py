@@ -9,10 +9,9 @@ from utils.formatter import build_buy_message_group, build_buy_message_channel
 from bot.keyboards import buy_kb
 
 class BuyWatcher:
-    POOL_HINTS = ('dedust', 'ston', 'ston.fi', 'stonfi', 'router', 'pool', 'vault', 'lp', 'amm', 'swap')
+    POOL_HINTS = ('dedust', 'ston', 'router', 'pool', 'vault', 'lp', 'amm', 'swap')
     SWAP_HINTS = ('swap', 'ston', 'ston.fi', 'stonfi', 'dedust', 'router', 'dex')
     SELL_HINTS = ('sell', 'sold', 'swap jetton for ton', 'jetton->ton', 'swapexactjettonsforton')
-    QUOTE_HINTS = (' ton', 'ton ', 'usdt', 'usd₮', 'usd', 'usdc')
 
     def __init__(self, bot, db, rpc):
         self.bot = bot; self.db = db; self.rpc = rpc; self._running = False; self._last_ton_price = 3.0; self._chat_type_cache: Dict[int, str] = {}
@@ -128,11 +127,12 @@ class BuyWatcher:
                 return True
         return False
 
-
     def _normalize_preview_text(self, value: str | None) -> str:
         s = str(value or '').lower()
-        for ch in (',', '\u2009', '\xa0', '\n', '\r', '\t', '→', '➡', '⇒', '⟶', '⟹'):
-            s = s.replace(ch, ' > ' if ch in ('→', '➡', '⇒', '⟶', '⟹') else ' ')
+        for ch in (',', '\u2009', '\xa0', '\n', '\r', '\t'):
+            s = s.replace(ch.encode().decode('unicode_escape'), ' ')
+        for arrow in ('→', '➡', '⇒', '⟶', '⟹', '->', '=>'):
+            s = s.replace(arrow, ' > ')
         return ' '.join(s.split())
 
     def _classify_swap_preview(self, value: str | None, labels: list[str]) -> bool | None:
@@ -140,9 +140,9 @@ class BuyWatcher:
         if '>' not in val:
             return None
         left, right = [x.strip() for x in val.split('>', 1)]
-        labels = [str(x).lower().strip() for x in labels if x and str(x).strip()]
-        left_has = any(lbl in left for lbl in labels)
-        right_has = any(lbl in right for lbl in labels)
+        norm_labels = [str(x).lower().strip() for x in labels if x and str(x).strip()]
+        left_has = any(lbl in left for lbl in norm_labels)
+        right_has = any(lbl in right for lbl in norm_labels)
         if left_has and not right_has:
             return False
         if right_has and not left_has:
@@ -161,31 +161,13 @@ class BuyWatcher:
                 if res is True:
                     explicit = True
         return explicit
-
-    def _event_swap_preview_side(self, event: dict | None, labels: list[str]) -> bool | None:
-        if not event or not labels:
-            return None
-        actions = event.get('actions') or []
-        for action in actions:
-            flat = list(self._flatten_pairs(action))
-            text_blob = ' '.join(v for _, v in flat)
-            if 'swap' not in text_blob:
-                continue
-            res = self._classify_from_preview_fields(action, labels)
-            if res is not None:
-                return res
-        return None
-
-    def _event_action_is_buy(self, event: dict | None, mint: str, labels: list[str] | None = None) -> bool | None:
+    def _event_action_is_buy(self, event: dict | None, mint: str) -> bool | None:
         if not event:
             return None
         flat_event = list(self._flatten_pairs(event))
         event_blob = ' '.join(v for _, v in flat_event)
         if any(tag in event_blob for tag in ('failed transaction', 'failed', 'aborted', 'bounce', 'bounced')):
             return False
-        preview_side = self._event_swap_preview_side(event, labels or [])
-        if preview_side is not None:
-            return preview_side
         actions = event.get('actions') or []
         target = str(mint).lower()
         saw_swap = False
@@ -204,41 +186,22 @@ class BuyWatcher:
                 has_target = (target in value) or (target in path)
                 if not has_target:
                     continue
-                if any(tag in path for tag in ('amount_out', 'jetton_out', 'token_out', 'asset_out', 'receive', 'received')):
+                if any(tag in path for tag in ('amount_out', 'jetton_out', 'token_out', 'asset_out', 'out', 'receive', 'received', 'destination', 'to')):
                     buy_score += 3
-                if any(tag in path for tag in ('amount_in', 'jetton_in', 'token_in', 'asset_in', 'send', 'sent', 'offer')):
+                if any(tag in path for tag in ('amount_in', 'jetton_in', 'token_in', 'asset_in', 'in', 'send', 'sent', 'source', 'from', 'sender', 'offer')):
                     sell_score += 3
-                if any(tag in path for tag in ('destination', 'to', 'recipient')) and self._is_poolish(value):
-                    sell_score += 2
-                if any(tag in path for tag in ('source', 'from', 'sender')) and self._is_poolish(value):
-                    buy_score += 2
             if target in text_blob:
-                if any(tag in text_blob for tag in ('sell', 'sold', 'swap jetton for ton', 'jetton->ton')):
+                if any(tag in text_blob for tag in ('sell', 'sold', 'dedustswappexternal', 'swap jetton for ton', 'jetton->ton')):
                     sell_score += 2
                 if any(tag in text_blob for tag in ('buy', 'bought', 'swap ton for jetton', 'ton->jetton')):
                     buy_score += 2
         if saw_swap:
-            if sell_score > buy_score and sell_score > 0:
+            if sell_score >= buy_score and sell_score > 0:
                 return False
             if buy_score > sell_score and buy_score > 0:
                 return True
             return None
         return None
-
-    def _tx_preview_is_buy(self, tx: dict | None, labels: list[str]) -> bool | None:
-        return self._classify_from_preview_fields(tx or {}, labels)
-
-    def _explicit_swap_side_anywhere(self, *objs, labels: list[str]) -> bool | None:
-        explicit = None
-        for obj in objs:
-            if not obj:
-                continue
-            res = self._classify_from_preview_fields(obj if isinstance(obj, dict) else {'text': obj}, labels)
-            if res is False:
-                return False
-            if res is True:
-                explicit = True
-        return explicit
 
     async def run_forever(self):
         self._running = True
@@ -312,40 +275,45 @@ class BuyWatcher:
                     continue
                 event = None
                 is_buy = None
-                tx_preview_buy = None
                 try:
                     event = await self.rpc.get_event_by_hash(sig)
-                    is_buy = self._event_action_is_buy(event, mint, labels)
+                    is_buy = self._event_action_is_buy(event, mint)
                 except Exception:
                     event = None
                     is_buy = None
-                try:
-                    tx_preview_buy = self._tx_preview_is_buy(tx, labels)
-                except Exception:
-                    tx_preview_buy = None
-                explicit_side = self._explicit_swap_side_anywhere(row, tx, event, labels=labels)
 
                 row = ev.get('row') or {}
+                preview_side = None
+                try:
+                    preview_side = self._classify_from_preview_fields(event, labels)
+                    if preview_side is None:
+                        preview_side = self._classify_from_preview_fields(tx, labels)
+                    if preview_side is None:
+                        preview_side = self._classify_from_preview_fields(row, labels)
+                except Exception:
+                    preview_side = None
+
                 if self._row_failed_flag(row) or self._looks_explicit_sell(row, tx, event):
                     await self._set_last_sig(conn, mint, sig)
                     continue
 
-                # Narrow sell-only fix: if any parsed swap preview clearly shows the tracked token on the left/input side, skip it.
-                if explicit_side is False or is_buy is False or tx_preview_buy is False or self._row_looks_like_sell(row):
+                # Narrow sell-only block: if a parsed swap preview clearly shows the tracked token
+                # on the left/input side, skip it. Otherwise keep the existing buy flow.
+                if preview_side is False:
+                    await self._set_last_sig(conn, mint, sig)
+                    continue
+                if preview_side is True:
+                    is_buy = True
+
+                if is_buy is False:
                     await self._set_last_sig(conn, mint, sig)
                     continue
 
                 swapish = self._looks_swapish(row, tx, event)
                 row_dir = self._row_transfer_direction(row)
-                positive_buy = (is_buy is True) or (tx_preview_buy is True)
-                if swapish:
-                    if not positive_buy and row_dir is not True:
-                        await self._set_last_sig(conn, mint, sig)
-                        continue
-                else:
-                    if not positive_buy and row_dir is not True:
-                        await self._set_last_sig(conn, mint, sig)
-                        continue
+                if is_buy is not True and not swapish and row_dir is not True:
+                    await self._set_last_sig(conn, mint, sig)
+                    continue
 
                 posted = await self._post_buy(mint, ev, tgt, ad_text, ad_link, ton_price)
                 if posted:
