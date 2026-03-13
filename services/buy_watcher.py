@@ -129,7 +129,9 @@ class BuyWatcher:
 
     def _normalize_preview_text(self, value: str | None) -> str:
         s = str(value or '').lower()
-        for ch in (',', '\u2009', '\xa0', '\n', '\r', '\t'):
+        # Keep numeric values intact: turn 99,227 into 99227 instead of '99 227'.
+        s = re.sub(r'(?<=\d),(?=\d)', '', s)
+        for ch in ('\u2009', '\xa0', '\n', '\r', '\t'):
             s = s.replace(ch.encode().decode('unicode_escape'), ' ')
         for arrow in ('→', '➡', '⇒', '⟶', '⟹', '->', '=>'):
             s = s.replace(arrow, ' > ')
@@ -440,10 +442,10 @@ class BuyWatcher:
 
         if not candidates:
             return None, None
-        # Prefer strongest confidence, then amount closest to actual token received, then highest spent.
+        # Prefer strongest confidence, then amount closest to actual token received, then spent amount.
         candidates.sort(key=lambda x: (-x[0], x[3], -x[1]))
         _, spent, got, _ = candidates[0]
-        return spent, got
+        return round(float(spent), 8), round(float(got), 8)
 
     async def _post_buy(self, mint: str, ev: dict, tgt: dict, ad_text: str | None, ad_link: str | None, ton_price: float):
         meta = await fetch_token_meta(mint); token_name = (meta.get('symbol') or meta.get('name') or mint[:6]);
