@@ -162,76 +162,140 @@ class BuyWatcher:
                     explicit = True
         return explicit
 
-    def _identity_set(self, mint: str, labels: list[str] | None = None) -> set[str]:
-        identities = {str(mint).lower().strip()}
-        for lbl in (labels or []):
-            s = str(lbl or '').lower().strip()
-            if s and len(s) >= 2:
-                identities.add(s)
-        return {x for x in identities if x}
+    def _safe_float(self, value) -> float | None:
+        try:
+            if value is None or value == '':
+                return None
+            return float(str(value).replace(',', '').strip())
+        except Exception:
+            return None
 
-    def _match_identity(self, value: str | None, identities: set[str]) -> bool:
-        v = str(value or '').lower().strip()
-        if not v:
+    def _safe_int(self, value) -> int | None:
+        try:
+            if value is None or value == '':
+                return None
+            return int(str(value).strip())
+        except Exception:
+            return None
+
+    def _extract_amount_from_text(self, text: str | None) -> float | None:
+        s = str(text or '')
+        if not s:
+            return None
+        m = re.search(r'([0-9]+(?:[.,][0-9]+)?)\s*TON\b', s, flags=re.I)
+        if not m:
+            return None
+        try:
+            return float(m.group(1).replace(',', ''))
+        except Exception:
+            return None
+
+    def _branch_has_ton(self, path: str, obj: dict | None) -> bool:
+        if not obj:
             return False
-        compact = ''.join(ch for ch in v if ch.isalnum())
-        for ident in identities:
-            if ident == v or ident in v or v in ident:
-                return True
-            ic = ''.join(ch for ch in ident if ch.isalnum())
-            if ic and (ic == compact or ic in compact or compact in ic):
-                return True
-        return False
+        path = (path or '').lower()
+        prefix = path.rsplit('.', 1)[0] if '.' in path else path
+        blob = []
+        for p, v in self._flatten_pairs(obj):
+            if p.startswith(prefix):
+                blob.append(v)
+        joined = ' '.join(blob)
+        return ' ton ' in f' {joined} ' or ' nanot' in joined or 'native' in joined or 'toncoin' in joined
 
-    def _extract_side_values(self, flat: list[tuple[str, str]], side: str) -> list[str]:
-        tags = {
-            'in': ('jetton_master_in', 'token_in', 'asset_in', 'amount_in', 'offer', 'sell', 'source_token', 'from_token', 'input_token'),
-            'out': ('jetton_master_out', 'token_out', 'asset_out', 'amount_out', 'ask', 'buy', 'destination_token', 'to_token', 'output_token'),
-        }[side]
-        values: list[str] = []
-        for path, value in flat:
-            if any(tag in path for tag in tags):
-                values.append(value)
-        return values
+    def _extract_ton_amount(self, row: dict | None, tx: dict | None, event: dict | None, labels: list[str]) -> float | None:
+        candidates: list[tuple[int, float]] = []
 
-    def _event_swap_direction(self, event: dict | None, mint: str, labels: list[str] | None = None) -> bool | None:
+        def push(score: int, val):
+            v = self._safe_float(val)
+            if v is None or v <= 0:
+                return
+            if v > 1_000_000_000:
+                v = v / 1_000_000_000
+            if 0 < v < 1_000_000:
+                candidates.append((score, v))
+
+        preview_sources = [event, tx, row]
+        for obj in preview_sources:
+            if not obj:
+                continue
+            for path, value in self._flatten_pairs(obj):
+                if not any(k in path for k in ('preview', 'description', 'title', 'text', 'comment', 'value', 'label', 'name')):
+                    continue
+                val = self._extract_amount_from_text(value)
+                if val is None:
+                    continue
+                side = self._classify_swap_preview(value, labels)
+                if side is True:
+                    push(120, val)
+                elif side is None:
+                    push(70, val)
+
+        for obj in (event, tx, row):
+            if not obj:
+                continue
+            for path, value in self._flatten_pairs(obj):
+                lower = path.lower()
+                if not any(k in lower for k in ('amount', 'value', 'quantity', 'coins', 'ton', 'in', 'offer', 'send', 'spent', 'pay')):
+                    continue
+                if any(k in lower for k in ('amount_out', 'out_amount', 'ton_out', 'received', 'receive', 'refund', 'change', 'destination', 'to')):
+                    continue
+                tonish = ('ton' in lower) or self._branch_has_ton(lower, obj)
+                if not tonish:
+                    continue
+                score = 20
+                if any(k in lower for k in ('amount_in', 'ton_in', 'offer', 'send', 'spent', 'pay', 'in_amount', 'source', 'from')):
+                    score = 90
+                elif 'amount' in lower or 'value' in lower:
+                    score = 60
+                push(score, value)
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: (-x[0], x[1]))
+        return candidates[0][1]
+
+    def _event_action_is_buy(self, event: dict | None, mint: str) -> bool | None:
         if not event:
             return None
-        identities = self._identity_set(mint, labels)
-        explicit = self._classify_from_preview_fields(event, list(identities))
-        if explicit is not None:
-            return explicit
-        for action in event.get('actions') or []:
-            flat = list(self._flatten_pairs(action))
-            blob = ' '.join(v for _, v in flat)
+        flat_event = list(self._flatten_pairs(event))
+        event_blob = ' '.join(v for _, v in flat_event)
+        if any(tag in event_blob for tag in ('failed transaction', 'failed', 'aborted', 'bounce', 'bounced')):
+            return False
+        actions = event.get('actions') or []
+        target = str(mint).lower()
+        saw_swap = False
+        buy_score = 0
+        sell_score = 0
+        for action in actions:
             atype = str(action.get('type') or action.get('__typename') or '').lower()
-            if 'failed' in blob or 'aborted' in blob or str(action.get('status') or '').lower() in {'failed', 'aborted', 'error'}:
+            status = str(action.get('status') or '').lower()
+            flat = list(self._flatten_pairs(action))
+            text_blob = ' '.join(v for _, v in flat)
+            if status in {'failed', 'error', 'aborted'} or any(tag in text_blob for tag in ('failed transaction', 'failed', 'aborted')):
                 return False
-            is_swap = ('swap' in atype) or ('swap tokens' in blob) or any('jetton_master_in' in p or 'jetton_master_out' in p for p, _ in flat)
-            if not is_swap:
-                continue
-            # 1) direct text preview anywhere in the action
-            act_preview = self._classify_from_preview_fields(action, list(identities))
-            if act_preview is not None:
-                return act_preview
-            # 2) structured in/out fields anywhere in the action
-            in_vals = self._extract_side_values(flat, 'in')
-            out_vals = self._extract_side_values(flat, 'out')
-            in_match = any(self._match_identity(v, identities) for v in in_vals)
-            out_match = any(self._match_identity(v, identities) for v in out_vals)
-            if in_match and not out_match:
+            if 'swap' in atype or 'swap' in text_blob:
+                saw_swap = True
+            for path, value in flat:
+                has_target = (target in value) or (target in path)
+                if not has_target:
+                    continue
+                if any(tag in path for tag in ('amount_out', 'jetton_out', 'token_out', 'asset_out', 'out', 'receive', 'received', 'destination', 'to')):
+                    buy_score += 3
+                if any(tag in path for tag in ('amount_in', 'jetton_in', 'token_in', 'asset_in', 'in', 'send', 'sent', 'source', 'from', 'sender', 'offer')):
+                    sell_score += 3
+            if target in text_blob:
+                if any(tag in text_blob for tag in ('sell', 'sold', 'dedustswappexternal', 'swap jetton for ton', 'jetton->ton')):
+                    sell_score += 2
+                if any(tag in text_blob for tag in ('buy', 'bought', 'swap ton for jetton', 'ton->jetton')):
+                    buy_score += 2
+        if saw_swap:
+            if sell_score >= buy_score and sell_score > 0:
                 return False
-            if out_match and not in_match:
+            if buy_score > sell_score and buy_score > 0:
                 return True
-            # 3) any generic left/right style text line inside the action
-            for _, value in flat:
-                res = self._classify_swap_preview(value, list(identities))
-                if res is not None:
-                    return res
+            return None
         return None
 
-    def _event_action_is_buy(self, event: dict | None, mint: str, labels: list[str] | None = None) -> bool | None:
-        return self._event_swap_direction(event, mint, labels)
     async def run_forever(self):
         self._running = True
         while self._running:
@@ -256,9 +320,19 @@ class BuyWatcher:
             if self._row_failed_flag(row):
                 continue
             amount_raw = row.get('amount') or row.get('jetton_amount') or 0
-            decimals = int((row.get('jetton') or {}).get('decimals') or row.get('decimals') or 9)
+            meta_decimals = None
             try:
-                got_tokens = float(amount_raw) / (10 ** decimals)
+                meta_hint = await fetch_token_meta(mint)
+                meta_decimals = meta_hint.get('decimals')
+            except Exception:
+                meta_hint = {}
+            decimals = int((row.get('jetton') or {}).get('decimals') or row.get('decimals') or meta_decimals or 9)
+            try:
+                raw_float = float(amount_raw)
+                if raw_float > 0 and raw_float < 1:
+                    got_tokens = raw_float
+                else:
+                    got_tokens = raw_float / (10 ** decimals)
             except Exception:
                 got_tokens = 0.0
             buyer = row.get('destination') or row.get('to') or row.get('owner') or 'Unknown'
@@ -306,7 +380,7 @@ class BuyWatcher:
                 is_buy = None
                 try:
                     event = await self.rpc.get_event_by_hash(sig)
-                    is_buy = self._event_action_is_buy(event, mint, labels)
+                    is_buy = self._event_action_is_buy(event, mint)
                 except Exception:
                     event = None
                     is_buy = None
@@ -326,124 +400,29 @@ class BuyWatcher:
                     await self._set_last_sig(conn, mint, sig)
                     continue
 
-                # Clear parsed sell -> skip immediately.
-                if is_buy is False or preview_side is False:
+                # Narrow sell-only block: if a parsed swap preview clearly shows the tracked token
+                # on the left/input side, skip it. Otherwise keep the existing buy flow.
+                if preview_side is False:
                     await self._set_last_sig(conn, mint, sig)
                     continue
-                if is_buy is None and preview_side is True:
+                if preview_side is True:
                     is_buy = True
+
+                if is_buy is False:
+                    await self._set_last_sig(conn, mint, sig)
+                    continue
 
                 swapish = self._looks_swapish(row, tx, event)
                 row_dir = self._row_transfer_direction(row)
-                # For swap-like transactions, require an explicit buy classification.
-                # This prevents sells like TOKEN > TON / TOKEN > USDT from slipping through.
-                if swapish and is_buy is not True:
-                    await self._set_last_sig(conn, mint, sig)
-                    continue
-                # For non-swap plain transfers, only allow obvious inbound transfer direction.
-                if not swapish and row_dir is not True:
+                if is_buy is not True and not swapish and row_dir is not True:
                     await self._set_last_sig(conn, mint, sig)
                     continue
 
-                ev['event'] = event
-                ev['tx'] = tx
                 posted = await self._post_buy(mint, ev, tgt, ad_text, ad_link, ton_price)
                 if posted:
                     await self._mark_posted(conn, sig)
                 await self._set_last_sig(conn, mint, sig)
         await conn.close()
-
-    def _parse_amount_and_asset(self, side: str) -> tuple[float | None, str]:
-        s = str(side or '').strip().replace(',', '')
-        m = re.search(r'([-+]?\d+(?:\.\d+)?)\s*([A-Za-z0-9_\-$₮]+)', s)
-        if not m:
-            return None, s.lower()
-        try:
-            amt = float(m.group(1))
-        except Exception:
-            amt = None
-        return amt, m.group(2).lower()
-
-    def _extract_exact_buy_amounts(self, mint: str, labels: list[str] | None = None, *sources, target_got: float | None = None) -> tuple[float | None, float | None]:
-        identities = self._identity_set(mint, labels)
-        quote_assets = {"ton", "toncoin", "usd₮", "usdt", "usdt.t", "usdtt", "tether"}
-        candidates: list[tuple[int, float, float, float]] = []
-
-        def _asset_matches(value: str | None) -> bool:
-            v = self._normalize_preview_text(value)
-            return any(lbl and lbl in v for lbl in identities)
-
-        def _add_candidate(spent_amt: float | None, got_amt: float | None, confidence: int, distance: float | None = None):
-            if spent_amt is None or got_amt is None:
-                return
-            if spent_amt <= 0 or got_amt <= 0:
-                return
-            if distance is None:
-                if target_got and target_got > 0:
-                    distance = abs(float(got_amt) - float(target_got))
-                else:
-                    distance = 0.0
-            candidates.append((confidence, float(spent_amt), float(got_amt), float(distance)))
-
-        def _consider_pair(left: str, right: str, confidence: int = 10):
-            left = self._normalize_preview_text(left)
-            right = self._normalize_preview_text(right)
-            spent_amt, spent_asset = self._parse_amount_and_asset(left)
-            got_amt, got_asset = self._parse_amount_and_asset(right)
-            if spent_amt is None or got_amt is None:
-                return
-            if not _asset_matches(got_asset):
-                return
-            if spent_asset not in quote_assets:
-                return
-            _add_candidate(spent_amt, got_amt, confidence)
-
-        def _consider_text(text: str, confidence: int = 10):
-            val = self._normalize_preview_text(text)
-            if '>' not in val:
-                return
-            left, right = [x.strip() for x in val.split('>', 1)]
-            _consider_pair(left, right, confidence)
-
-        for src in sources:
-            if not isinstance(src, dict):
-                continue
-            for action in src.get('actions') or []:
-                atype = str(action.get('type') or action.get('__typename') or '').lower()
-                flat = list(self._flatten_pairs(action))
-                if 'swap' in atype or any('swap tokens' in v for _, v in flat):
-                    preview_values=[]
-                    for path, value in flat:
-                        if any(k in path for k in ('preview', 'value', 'name', 'description', 'title', 'text', 'label')):
-                            preview_values.append(value)
-                    for value in preview_values:
-                        _consider_text(value, 120)
-                in_amount = out_amount = None
-                in_asset = out_asset = ''
-                for path, value in flat:
-                    if any(tag in path for tag in ('amount_in', 'token_in', 'asset_in', 'jetton_master_in')) and in_amount is None:
-                        amt, asset = self._parse_amount_and_asset(value)
-                        if amt is not None:
-                            in_amount, in_asset = amt, asset
-                    if any(tag in path for tag in ('amount_out', 'token_out', 'asset_out', 'jetton_master_out')) and out_amount is None:
-                        amt, asset = self._parse_amount_and_asset(value)
-                        if amt is not None:
-                            out_amount, out_asset = amt, asset
-                if in_amount is not None and out_amount is not None and _asset_matches(out_asset) and in_asset in quote_assets:
-                    _add_candidate(in_amount, out_amount, 100)
-
-        for src in sources:
-            if not src:
-                continue
-            for _, value in self._flatten_pairs(src):
-                _consider_text(value, 40)
-
-        if not candidates:
-            return None, None
-        # Prefer strongest confidence, then amount closest to actual token received, then highest spent.
-        candidates.sort(key=lambda x: (-x[0], x[3], -x[1]))
-        _, spent, got, _ = candidates[0]
-        return spent, got
 
     async def _post_buy(self, mint: str, ev: dict, tgt: dict, ad_text: str | None, ad_link: str | None, ton_price: float):
         meta = await fetch_token_meta(mint); token_name = (meta.get('symbol') or meta.get('name') or mint[:6]);
@@ -456,15 +435,27 @@ class BuyWatcher:
                 await connm.commit(); await connm.close()
         except Exception:
             pass
-        got_tokens = float(ev.get('got_tokens') or 0.0); buyer = ev.get('buyer') or 'Unknown';
-        exact_spent_ton, exact_got_tokens = self._extract_exact_buy_amounts(mint, [mint, meta.get('symbol') or '', meta.get('name') or ''], ev.get('event'), ev.get('tx'), ev.get('row'), target_got=got_tokens)
-        if exact_got_tokens and exact_got_tokens > 0:
-            got_tokens = exact_got_tokens
-        spent_usd = (float(meta.get('priceUsd') or 0.0) * got_tokens) if meta.get('priceUsd') is not None else 0.0
-        spent_ton = exact_spent_ton if exact_spent_ton and exact_spent_ton > 0 else ((spent_usd / ton_price) if spent_usd and ton_price else 0.0)
-        if exact_spent_ton and exact_spent_ton > 0 and ton_price:
-            spent_usd = exact_spent_ton * ton_price
-        if spent_ton < float(settings.MIN_BUY_DEFAULT_TON): return False
+        got_tokens = float(ev.get('got_tokens') or 0.0)
+        buyer = ev.get('buyer') or 'Unknown'
+        tx = None
+        event = None
+        try:
+            tx = await self.rpc.get_transaction_by_hash(ev['signature'])
+        except Exception:
+            tx = None
+        try:
+            event = await self.rpc.get_event_by_hash(ev['signature'])
+        except Exception:
+            event = None
+        labels = [mint, meta.get('symbol') or '', meta.get('name') or '']
+        spent_ton = self._extract_ton_amount(ev.get('row') or {}, tx, event, labels) or 0.0
+        spent_usd = (spent_ton * ton_price) if spent_ton and ton_price else 0.0
+        if spent_usd <= 0 and meta.get('priceUsd') is not None and got_tokens > 0:
+            spent_usd = float(meta.get('priceUsd') or 0.0) * got_tokens
+        if spent_ton <= 0 and spent_usd > 0 and ton_price:
+            spent_ton = spent_usd / ton_price
+        if spent_ton < float(settings.MIN_BUY_DEFAULT_TON):
+            return False
         now_ts = int(time.time())
         try:
             conn2 = await self.db.connect()
