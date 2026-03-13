@@ -131,16 +131,22 @@ def _is_ca_query_text(text: str | None) -> bool:
     s = (text or '').strip().lower()
     if not s:
         return False
-    base = s.split('@', 1)[0]
+    first = s.split()[0]
+    base = first.split('@', 1)[0]
     return base in {'ca', '/ca', 'contract', '/contract', 'address', '/address'}
 
 async def _reply_group_ca(msg: Message, db: DB):
     if msg.chat.type not in {'group', 'supergroup'}:
         return False
     conn = await db.connect()
-    cur = await conn.execute("SELECT gs.token_mint, COALESCE(NULLIF(tt.symbol,''), NULLIF(tt.name,''), gs.token_mint) AS label FROM group_settings gs LEFT JOIN tracked_tokens tt ON tt.mint=gs.token_mint WHERE gs.group_id=? ORDER BY gs.is_active DESC, gs.id DESC LIMIT 1", (msg.chat.id,))
-    row = await cur.fetchone()
-    await conn.close()
+    try:
+        cur = await conn.execute("SELECT gs.token_mint, COALESCE(NULLIF(tt.symbol,''), NULLIF(tt.name,''), gs.token_mint) AS label FROM group_settings gs LEFT JOIN tracked_tokens tt ON tt.mint=gs.token_mint WHERE gs.group_id=? ORDER BY gs.is_active DESC, gs.created_at DESC LIMIT 1", (msg.chat.id,))
+        row = await cur.fetchone()
+        if (not row or not row['token_mint']):
+            cur = await conn.execute("SELECT mint AS token_mint, COALESCE(NULLIF(symbol,''), NULLIF(name,''), mint) AS label FROM tracked_tokens ORDER BY created_at DESC LIMIT 1")
+            row = await cur.fetchone()
+    finally:
+        await conn.close()
     if not row or not row['token_mint']:
         await msg.reply('No token added for this group yet.')
         return True
