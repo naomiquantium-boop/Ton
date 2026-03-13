@@ -346,6 +346,7 @@ class BuyWatcher:
                     continue
 
                 ev['event'] = event
+                ev['tx'] = tx
                 posted = await self._post_buy(mint, ev, tgt, ad_text, ad_link, ton_price)
                 if posted:
                     await self._mark_posted(conn, sig)
@@ -363,59 +364,72 @@ class BuyWatcher:
             amt = None
         return amt, m.group(2).lower()
 
-    def _extract_exact_buy_amounts(self, event: dict | None, mint: str, labels: list[str] | None = None) -> tuple[float | None, float | None]:
-        if not event:
-            return None, None
+    def _extract_exact_buy_amounts(self, mint: str, labels: list[str] | None = None, *sources) -> tuple[float | None, float | None]:
         identities = self._identity_set(mint, labels)
+        quote_assets = {'ton', 'toncoin', 'usd₮', 'usdt', 'usdt.t', 'usdtt', 'tether'}
         best_spent: float | None = None
         best_got: float | None = None
 
-        def _consider_text(text: str):
+        def _consider_pair(left: str, right: str):
             nonlocal best_spent, best_got
-            val = self._normalize_preview_text(text)
-            if '>' not in val:
-                return
-            left, right = [x.strip() for x in val.split('>', 1)]
-            if not any(lbl in right for lbl in identities):
-                return
+            left = self._normalize_preview_text(left)
+            right = self._normalize_preview_text(right)
             spent_amt, spent_asset = self._parse_amount_and_asset(left)
             got_amt, got_asset = self._parse_amount_and_asset(right)
             if spent_amt is None or got_amt is None:
                 return
             if not any(lbl in got_asset for lbl in identities):
                 return
-            if spent_asset not in {'ton', 'toncoin'}:
+            if spent_asset not in quote_assets:
                 return
             if best_spent is None or spent_amt > best_spent:
                 best_spent, best_got = spent_amt, got_amt
 
-        # First pass: scan the whole event blob so exact preview strings like
-        # "10 TON > 470.22 REDO" are captured even if nested oddly.
-        event_blob = self._normalize_preview_text(self._text_blob(event))
-        for ident in sorted(identities, key=len, reverse=True):
-            try:
-                pat = re.compile(rf'(\d+(?:\.\d+)?)\s*ton\s*>\s*(\d+(?:\.\d+)?)\s*{re.escape(ident)}\b')
-            except re.error:
-                continue
-            for m in pat.finditer(event_blob):
-                spent_amt = float(m.group(1))
-                got_amt = float(m.group(2))
-                if best_spent is None or spent_amt > best_spent:
-                    best_spent, best_got = spent_amt, got_amt
+        def _consider_text(text: str):
+            val = self._normalize_preview_text(text)
+            if '>' not in val:
+                return
+            left, right = [x.strip() for x in val.split('>', 1)]
+            _consider_pair(left, right)
 
-        # Second pass: scan individual action fields.
-        for action in event.get('actions') or []:
-            flat = list(self._flatten_pairs(action))
-            blob = ' '.join(v for _, v in flat)
-            atype = str(action.get('type') or action.get('__typename') or '').lower()
-            if 'failed' in blob or 'aborted' in blob or str(action.get('status') or '').lower() in {'failed', 'aborted', 'error'}:
+        for src in sources:
+            if not src:
                 continue
-            is_swap = ('swap' in atype) or ('swap tokens' in blob) or any('jetton_master_in' in p or 'jetton_master_out' in p for p, _ in flat)
-            if not is_swap:
-                continue
-            for _, value in flat:
+            blob = self._normalize_preview_text(self._text_blob(src))
+            for ident in sorted(identities, key=len, reverse=True):
+                try:
+                    pat = re.compile(rf'(\d+(?:\.\d+)?)\s*(?:ton|toncoin|usd₮|usdt)\s*>\s*(\d+(?:\.\d+)?)\s*{re.escape(ident)}\b')
+                except re.error:
+                    continue
+                for m in pat.finditer(blob):
+                    spent_amt = float(m.group(1))
+                    got_amt = float(m.group(2))
+                    if best_spent is None or spent_amt > best_spent:
+                        best_spent, best_got = spent_amt, got_amt
+            for _, value in self._flatten_pairs(src):
                 _consider_text(value)
 
+        for src in sources:
+            if not isinstance(src, dict):
+                continue
+            for action in src.get('actions') or []:
+                flat = list(self._flatten_pairs(action))
+                in_amount = out_amount = None
+                in_asset = out_asset = ''
+                for path, value in flat:
+                    if any(tag in path for tag in ('amount_in', 'token_in', 'asset_in')) and in_amount is None:
+                        amt, asset = self._parse_amount_and_asset(value)
+                        if amt is not None:
+                            in_amount, in_asset = amt, asset
+                    if any(tag in path for tag in ('amount_out', 'token_out', 'asset_out')) and out_amount is None:
+                        amt, asset = self._parse_amount_and_asset(value)
+                        if amt is not None:
+                            out_amount, out_asset = amt, asset
+                if in_amount is not None and out_amount is not None and any(lbl in out_asset for lbl in identities) and in_asset in quote_assets:
+                    if best_spent is None or in_amount > best_spent:
+                        best_spent, best_got = in_amount, out_amount
+                for _, value in flat:
+                    _consider_text(value)
         return best_spent, best_got
 
     async def _post_buy(self, mint: str, ev: dict, tgt: dict, ad_text: str | None, ad_link: str | None, ton_price: float):
@@ -430,7 +444,7 @@ class BuyWatcher:
         except Exception:
             pass
         got_tokens = float(ev.get('got_tokens') or 0.0); buyer = ev.get('buyer') or 'Unknown';
-        exact_spent_ton, exact_got_tokens = self._extract_exact_buy_amounts(ev.get('event'), mint, [mint, meta.get('symbol') or '', meta.get('name') or ''])
+        exact_spent_ton, exact_got_tokens = self._extract_exact_buy_amounts(mint, [mint, meta.get('symbol') or '', meta.get('name') or ''], ev.get('event'), ev.get('tx'), ev.get('row'))
         if exact_got_tokens and exact_got_tokens > 0:
             got_tokens = exact_got_tokens
         spent_usd = (float(meta.get('priceUsd') or 0.0) * got_tokens) if meta.get('priceUsd') is not None else 0.0
