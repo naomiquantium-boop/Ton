@@ -138,10 +138,10 @@ async def _reply_group_ca(msg: Message, db: DB):
     if msg.chat.type not in {'group', 'supergroup'}:
         return False
     conn = await db.connect()
-    cur = await conn.execute("SELECT token_mint, COALESCE(NULLIF(symbol,''), NULLIF(name,''), token_mint) AS label FROM group_settings LEFT JOIN tracked_tokens ON tracked_tokens.mint=group_settings.token_mint WHERE group_id=? AND is_active=1 ORDER BY group_settings.id DESC LIMIT 1", (msg.chat.id,))
+    cur = await conn.execute("SELECT gs.token_mint, COALESCE(NULLIF(tt.symbol,''), NULLIF(tt.name,''), gs.token_mint) AS label FROM group_settings gs LEFT JOIN tracked_tokens tt ON tt.mint=gs.token_mint WHERE gs.group_id=? ORDER BY gs.is_active DESC, gs.id DESC LIMIT 1", (msg.chat.id,))
     row = await cur.fetchone()
     await conn.close()
-    if not row:
+    if not row or not row['token_mint']:
         await msg.reply('No token added for this group yet.')
         return True
     await msg.reply(f"Symbol: {row['label']}\n{row['token_mint']}")
