@@ -131,23 +131,20 @@ def _is_ca_query_text(text: str | None) -> bool:
     s = (text or '').strip().lower()
     if not s:
         return False
-    first = s.split()[0]
-    base = first.split('@', 1)[0]
+    # Accept plain ca/contract/address and command forms with optional @bot suffix.
+    s = s.split()[0]
+    s = s.rstrip('!?.,:;')
+    base = s.split('@', 1)[0]
     return base in {'ca', '/ca', 'contract', '/contract', 'address', '/address'}
 
 async def _reply_group_ca(msg: Message, db: DB):
     if msg.chat.type not in {'group', 'supergroup'}:
         return False
     conn = await db.connect()
-    try:
-        cur = await conn.execute("SELECT gs.token_mint, COALESCE(NULLIF(tt.symbol,''), NULLIF(tt.name,''), gs.token_mint) AS label FROM group_settings gs LEFT JOIN tracked_tokens tt ON tt.mint=gs.token_mint WHERE gs.group_id=? ORDER BY gs.is_active DESC, gs.created_at DESC LIMIT 1", (msg.chat.id,))
-        row = await cur.fetchone()
-        if (not row or not row['token_mint']):
-            cur = await conn.execute("SELECT mint AS token_mint, COALESCE(NULLIF(symbol,''), NULLIF(name,''), mint) AS label FROM tracked_tokens ORDER BY created_at DESC LIMIT 1")
-            row = await cur.fetchone()
-    finally:
-        await conn.close()
-    if not row or not row['token_mint']:
+    cur = await conn.execute("SELECT token_mint, COALESCE(NULLIF(symbol,''), NULLIF(name,''), token_mint) AS label FROM group_settings LEFT JOIN tracked_tokens ON tracked_tokens.mint=group_settings.token_mint WHERE group_id=? AND is_active=1 ORDER BY group_settings.id DESC LIMIT 1", (msg.chat.id,))
+    row = await cur.fetchone()
+    await conn.close()
+    if not row:
         await msg.reply('No token added for this group yet.')
         return True
     await msg.reply(f"Symbol: {row['label']}\n{row['token_mint']}")
@@ -166,6 +163,15 @@ async def early_token_contract_reply(msg: Message, db: DB):
         return
     if await _reply_group_ca(msg, db):
         return
+
+@router.message(StateFilter('*'))
+async def ultra_early_group_ca_fallback(msg: Message, db: DB):
+    if msg.chat.type not in {"group", "supergroup"}:
+        return
+    txt = getattr(msg, 'text', None)
+    if _is_ca_query_text(txt):
+        if await _reply_group_ca(msg, db):
+            return
 
 async def _tokens(db: DB) -> list[tuple[str, str]]:
     conn = await db.connect()
