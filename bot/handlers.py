@@ -641,8 +641,16 @@ async def status(msg: Message, db: DB):
 
 
 @router.message(Command('ca'))
-async def token_contract_reply_command(msg: Message, db: DB):
-    return await token_contract_reply(msg, db)
+async def token_contract_reply_cmd(msg: Message, db: DB):
+    if msg.chat.type not in {"group", "supergroup"}:
+        return
+    conn = await db.connect()
+    cur = await conn.execute("SELECT token_mint, COALESCE(NULLIF(symbol,''), NULLIF(name,''), token_mint) AS label FROM group_settings LEFT JOIN tracked_tokens ON tracked_tokens.mint=group_settings.token_mint WHERE group_id=? AND is_active=1 ORDER BY group_settings.id DESC LIMIT 1", (msg.chat.id,))
+    row = await cur.fetchone()
+    await conn.close()
+    if not row:
+        return await msg.reply('No token added for this group yet.')
+    await msg.reply(f"Symbol: {row['label']}\n{row['token_mint']}")
 
 @router.message(F.text.func(lambda t: bool(t and t.strip().lower() in {"ca", "contract", "address"})))
 async def token_contract_reply(msg: Message, db: DB):
