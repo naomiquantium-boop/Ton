@@ -73,11 +73,18 @@ class LeaderboardUpdater:
 
             prev_mcap = 0.0
             try:
+                baseline_ts = now - 300
                 cur = await conn.execute(
-                    "SELECT mcap_usd FROM mcap_snapshots WHERE mint=? ORDER BY ts DESC, id DESC LIMIT 1",
-                    (mint,),
+                    "SELECT mcap_usd FROM mcap_snapshots WHERE mint=? AND ts<=? ORDER BY ts DESC, id DESC LIMIT 1",
+                    (mint, baseline_ts),
                 )
                 prev_row = await cur.fetchone()
+                if not prev_row:
+                    cur = await conn.execute(
+                        "SELECT mcap_usd FROM mcap_snapshots WHERE mint=? ORDER BY ts ASC, id ASC LIMIT 1",
+                        (mint,),
+                    )
+                    prev_row = await cur.fetchone()
                 prev_mcap = float(prev_row['mcap_usd']) if prev_row and prev_row['mcap_usd'] is not None else 0.0
             except Exception:
                 prev_mcap = 0.0
@@ -90,10 +97,21 @@ class LeaderboardUpdater:
             rows.append((len(rows) + 1, label, metric, pct, tg_links.get(mint), meta.get('dexUrl')))
 
             if mcap > 0:
-                await conn.execute(
-                    "INSERT INTO mcap_snapshots(mint, mcap_usd, ts) VALUES(?,?,?)",
-                    (mint, mcap, now),
-                )
+                try:
+                    cur = await conn.execute(
+                        "SELECT mcap_usd, ts FROM mcap_snapshots WHERE mint=? ORDER BY ts DESC, id DESC LIMIT 1",
+                        (mint,),
+                    )
+                    last_snap = await cur.fetchone()
+                    last_mcap = float(last_snap['mcap_usd']) if last_snap and last_snap['mcap_usd'] is not None else 0.0
+                    last_ts = int(last_snap['ts']) if last_snap and last_snap['ts'] is not None else 0
+                    if not last_snap or abs(last_mcap - mcap) > 0.0001 or now - last_ts >= 300:
+                        await conn.execute(
+                            "INSERT INTO mcap_snapshots(mint, mcap_usd, ts) VALUES(?,?,?)",
+                            (mint, mcap, now),
+                        )
+                except Exception:
+                    pass
 
         await conn.commit()
         text = build_leaderboard_message(rows, settings.LEADERBOARD_FOOTER_HANDLE)

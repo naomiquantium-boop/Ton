@@ -67,6 +67,57 @@ class BuyWatcher:
         if status in {'failed', 'error', 'aborted'}:
             return False
         return True
+    def _flatten_pairs(self, obj, prefix: str = ""):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                key = f"{prefix}.{k}" if prefix else str(k)
+                yield from self._flatten_pairs(v, key)
+        elif isinstance(obj, list):
+            for i, v in enumerate(obj):
+                key = f"{prefix}[{i}]" if prefix else f"[{i}]"
+                yield from self._flatten_pairs(v, key)
+        else:
+            yield prefix.lower(), str(obj).lower()
+
+    def _row_looks_like_sell(self, row: dict) -> bool:
+        for path, value in self._flatten_pairs(row):
+            if any(k in path for k in ('destination', 'to', 'owner', 'recipient')) and any(tag in value for tag in ('dedust', 'ston', 'router', 'pool')):
+                return True
+        return False
+
+    def _event_action_is_buy(self, event: dict | None, mint: str) -> bool | None:
+        if not event:
+            return None
+        actions = event.get('actions') or []
+        target = str(mint).lower()
+        saw_swap = False
+        buy_score = 0
+        sell_score = 0
+        for action in actions:
+            atype = str(action.get('type') or action.get('__typename') or '').lower()
+            flat = list(self._flatten_pairs(action))
+            if 'swap' in atype:
+                saw_swap = True
+            if any(target in value for _, value in flat):
+                for path, value in flat:
+                    if target not in value:
+                        continue
+                    if any(tag in path for tag in ('amount_out', 'jetton_out', 'token_out', 'asset_out', 'out', 'receive', 'received', 'destination', 'to')):
+                        buy_score += 2
+                    if any(tag in path for tag in ('amount_in', 'jetton_in', 'token_in', 'asset_in', 'in', 'send', 'sent', 'source', 'from', 'sender', 'offer')):
+                        sell_score += 2
+            text_blob = ' '.join(v for _, v in flat)
+            if target in text_blob:
+                if any(tag in text_blob for tag in ('sell', 'sold', 'dedustswappexternal')):
+                    sell_score += 1
+                if any(tag in text_blob for tag in ('buy', 'bought')):
+                    buy_score += 1
+        if saw_swap:
+            if sell_score > buy_score:
+                return False
+            if buy_score > sell_score:
+                return True
+        return None
 
     async def run_forever(self):
         self._running = True
@@ -89,7 +140,7 @@ class BuyWatcher:
                 continue
             if sig == last_sig:
                 break
-            if self._row_failed_flag(row):
+            if self._row_failed_flag(row) or self._row_looks_like_sell(row):
                 continue
             amount_raw = row.get('amount') or row.get('jetton_amount') or 0
             decimals = int((row.get('jetton') or {}).get('decimals') or row.get('decimals') or 9)
@@ -101,7 +152,7 @@ class BuyWatcher:
             ts = int(row.get('utime') or row.get('timestamp') or now)
             if got_tokens <= 0 or ts < now - 900:
                 continue
-            events.append({'buyer': buyer, 'got_tokens': got_tokens, 'signature': sig, 'timestamp': ts})
+            events.append({'buyer': buyer, 'got_tokens': got_tokens, 'signature': sig, 'timestamp': ts, 'row': row})
         return list(reversed(events)), newest
 
     async def tick(self):
@@ -123,12 +174,22 @@ class BuyWatcher:
                     await self._set_last_sig(conn, mint, sig)
                     continue
                 tx_ok = None
+                tx = None
                 try:
                     tx = await self.rpc.get_transaction_by_hash(sig)
                     tx_ok = self._tx_is_successful(tx)
                 except Exception:
                     tx_ok = None
                 if tx_ok is False:
+                    await self._set_last_sig(conn, mint, sig)
+                    continue
+                is_buy = None
+                try:
+                    event = await self.rpc.get_event_by_hash(sig)
+                    is_buy = self._event_action_is_buy(event, mint)
+                except Exception:
+                    is_buy = None
+                if is_buy is False:
                     await self._set_last_sig(conn, mint, sig)
                     continue
                 posted = await self._post_buy(mint, ev, tgt, ad_text, ad_link, ton_price)
