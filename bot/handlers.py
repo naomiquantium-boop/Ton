@@ -640,6 +640,10 @@ async def status(msg: Message, db: DB):
     await conn.close(); await msg.reply(f'Tracked tokens: {tokens}\nChannel enabled: {enabled}\nTrending forced/live: {trending}\nPending invoices: {pending}')
 
 
+@router.message(Command('ca'))
+async def token_contract_reply_command(msg: Message, db: DB):
+    return await token_contract_reply(msg, db)
+
 @router.message(F.text.func(lambda t: bool(t and t.strip().lower() in {"ca", "contract", "address"})))
 async def token_contract_reply(msg: Message, db: DB):
     if msg.chat.type not in {"group", "supergroup"}:
