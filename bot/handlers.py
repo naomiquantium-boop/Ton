@@ -125,6 +125,24 @@ def _norm_tg(v: str | None) -> str | None:
         return f'https://{t[7:]}'
     return t
 
+
+
+def _is_ca_query_text(text: str | None) -> bool:
+    s = (text or '').strip().lower()
+    return s in {'ca', '/ca', 'contract', '/contract', 'address', '/address'}
+
+async def _reply_group_ca(msg: Message, db: DB):
+    if msg.chat.type not in {'group', 'supergroup'}:
+        return False
+    conn = await db.connect()
+    cur = await conn.execute("SELECT token_mint, COALESCE(NULLIF(symbol,''), NULLIF(name,''), token_mint) AS label FROM group_settings LEFT JOIN tracked_tokens ON tracked_tokens.mint=group_settings.token_mint WHERE group_id=? AND is_active=1 ORDER BY group_settings.id DESC LIMIT 1", (msg.chat.id,))
+    row = await cur.fetchone()
+    await conn.close()
+    if not row:
+        await msg.reply('No token added for this group yet.')
+        return True
+    await msg.reply(f"Symbol: {row['label']}\n{row['token_mint']}")
+    return True
 async def _tokens(db: DB) -> list[tuple[str, str]]:
     conn = await db.connect()
     cur = await conn.execute("SELECT mint, COALESCE(symbol, name, mint) AS label FROM tracked_tokens ORDER BY created_at DESC LIMIT 50")
@@ -300,6 +318,9 @@ async def menu_add(cq: CallbackQuery, state: FSMContext):
 
 @router.message(AddTokenFlow.mint)
 async def add_token_mint(msg: Message, state: FSMContext, db: DB):
+    if _is_ca_query_text(msg.text):
+        if await _reply_group_ca(msg, db):
+            return
     mint = (msg.text or '').strip()
     if not MINT_RE.match(mint):
         return await msg.reply('Send a valid TON token address.')
@@ -316,6 +337,9 @@ async def add_token_mint(msg: Message, state: FSMContext, db: DB):
 
 @router.message(AddTokenFlow.tg)
 async def add_token_tg(msg: Message, state: FSMContext, db: DB):
+    if _is_ca_query_text(msg.text):
+        if await _reply_group_ca(msg, db):
+            return
     mint = (await state.get_data()).get('token_mint')
     conn = await db.connect(); await conn.execute("UPDATE tracked_tokens SET telegram_link=? WHERE mint=?", (_norm_tg(msg.text), mint)); await conn.commit(); await conn.close(); await state.clear(); await msg.answer('✅ Token saved.', reply_markup=main_menu_kb())
 
@@ -385,6 +409,9 @@ async def edit_set(cq: CallbackQuery, state: FSMContext):
 
 @router.message(EditTokenFlow.value)
 async def edit_token_value(msg: Message, state: FSMContext, db: DB):
+    if _is_ca_query_text(msg.text):
+        if await _reply_group_ca(msg, db):
+            return
     data = await state.get_data(); mint = data.get('edit_mint'); key = data.get('edit_key')
     if not mint:
         await state.clear(); return await msg.answer('Please open Edit again.')
@@ -434,11 +461,17 @@ async def advert_pick_token(cq: CallbackQuery, state: FSMContext):
     await cq.message.answer('⬇️ Send your Telegram group/channel link'); await cq.answer()
 
 @router.message(AdvertFlow.link)
-async def advert_link(msg: Message, state: FSMContext):
+async def advert_link(msg: Message, state: FSMContext, db: DB):
+    if _is_ca_query_text(msg.text):
+        if await _reply_group_ca(msg, db):
+            return
     await state.update_data(link=(msg.text or '').strip()); await state.set_state(AdvertFlow.content); await msg.answer('⬇️ Enter your advert text.')
 
 @router.message(AdvertFlow.content)
-async def advert_content(msg: Message, state: FSMContext):
+async def advert_content(msg: Message, state: FSMContext, db: DB):
+    if _is_ca_query_text(msg.text):
+        if await _reply_group_ca(msg, db):
+            return
     await state.update_data(content=(msg.text or '').strip()); await state.set_state(AdvertFlow.duration); await msg.answer('Choose ads duration:', reply_markup=advert_duration_kb())
 
 @router.callback_query(F.data.startswith('adpkg:'))
@@ -471,7 +504,10 @@ async def trending_pick_token(cq: CallbackQuery, state: FSMContext):
     await cq.answer()
 
 @router.message(TrendingFlow.link)
-async def trending_link(msg: Message, state: FSMContext):
+async def trending_link(msg: Message, state: FSMContext, db: DB):
+    if _is_ca_query_text(msg.text):
+        if await _reply_group_ca(msg, db):
+            return
     await state.update_data(link=(msg.text or '').strip())
     await msg.answer('Choose your trending slot:', reply_markup=trending_slot_kb())
 
