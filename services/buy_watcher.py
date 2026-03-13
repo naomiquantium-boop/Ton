@@ -368,89 +368,135 @@ class BuyWatcher:
 
     def _extract_exact_buy_amounts(self, mint: str, labels: list[str] | None = None, *sources, target_got: float | None = None) -> tuple[float | None, float | None]:
         identities = self._identity_set(mint, labels)
-        quote_assets = {"ton", "toncoin", "usd₮", "usdt", "usdt.t", "usdtt", "tether"}
+        quote_assets = {"ton", "wton", "pton", "usdt", "usd₮", "usdc"}
         candidates: list[tuple[int, float, float, float]] = []
 
-        def _asset_matches(value: str | None) -> bool:
-            v = self._normalize_preview_text(value)
-            return any(lbl and lbl in v for lbl in identities)
+        def _asset_matches(asset: str | None) -> bool:
+            return self._match_identity(asset, identities)
 
-        def _add_candidate(spent_amt: float | None, got_amt: float | None, confidence: int, distance: float | None = None):
-            if spent_amt is None or got_amt is None:
-                return
-            if spent_amt <= 0 or got_amt <= 0:
-                return
-            if distance is None:
-                if target_got and target_got > 0:
-                    distance = abs(float(got_amt) - float(target_got))
-                else:
-                    distance = 0.0
-            candidates.append((confidence, float(spent_amt), float(got_amt), float(distance)))
+        def _clean_num_str(raw: str) -> str:
+            s = str(raw or '').strip().lower()
+            s = re.sub(r'(?<=\d),(?=\d)', '', s)
+            return s
 
-        def _consider_pair(left: str, right: str, confidence: int = 10):
-            left = self._normalize_preview_text(left)
-            right = self._normalize_preview_text(right)
-            spent_amt, spent_asset = self._parse_amount_and_asset(left)
-            got_amt, got_asset = self._parse_amount_and_asset(right)
-            if spent_amt is None or got_amt is None:
-                return
-            if not _asset_matches(got_asset):
-                return
-            if spent_asset not in quote_assets:
-                return
-            _add_candidate(spent_amt, got_amt, confidence)
+        def _parse_amount_any(raw, asset_obj=None):
+            if raw is None:
+                return None
+            if isinstance(raw, (int, float)):
+                val = float(raw)
+                raw_s = str(raw)
+            else:
+                raw_s = _clean_num_str(str(raw))
+                m = re.search(r'[-+]?\d+(?:\.\d+)?', raw_s)
+                if not m:
+                    return None
+                try:
+                    val = float(m.group(0))
+                except Exception:
+                    return None
+            dec = None
+            if isinstance(asset_obj, dict):
+                d = asset_obj.get('decimals')
+                try:
+                    dec = int(d) if d is not None else None
+                except Exception:
+                    dec = None
+            if dec is not None and isinstance(raw_s, str) and raw_s.replace('-', '').isdigit() and abs(val) >= 10 ** max(dec + 2, 4):
+                try:
+                    val = val / (10 ** dec)
+                except Exception:
+                    pass
+            return float(val)
 
-        def _consider_text(text: str, confidence: int = 10):
+        def _asset_addr(asset):
+            if isinstance(asset, dict):
+                return str(asset.get('address') or asset.get('master') or asset.get('jetton_master') or asset.get('jettonMaster') or '').strip().lower()
+            return ''
+
+        def _asset_sym(asset):
+            if isinstance(asset, dict):
+                return str(asset.get('symbol') or asset.get('ticker') or asset.get('name') or '').strip().lower()
+            return ''
+
+        def _is_ton_asset(asset):
+            return _asset_sym(asset) in quote_assets or str(asset.get('type') if isinstance(asset, dict) else '').lower() == 'ton'
+
+        def _distance(got_amt: float) -> float:
+            if target_got and target_got > 0:
+                return abs(float(got_amt) - float(target_got))
+            return 0.0
+
+        def _add_candidate(spent_amt: float, got_amt: float, confidence: int):
+            if spent_amt is None or got_amt is None or spent_amt <= 0 or got_amt <= 0:
+                return
+            candidates.append((confidence, float(spent_amt), float(got_amt), _distance(got_amt)))
+
+        def _consider_preview_text(text: str, confidence: int):
             val = self._normalize_preview_text(text)
             if '>' not in val:
                 return
             left, right = [x.strip() for x in val.split('>', 1)]
-            _consider_pair(left, right, confidence)
+            spent_amt, spent_asset = self._parse_amount_and_asset(left)
+            got_amt, got_asset = self._parse_amount_and_asset(right)
+            if spent_amt is None or got_amt is None:
+                return
+            if spent_asset not in quote_assets:
+                return
+            if not _asset_matches(got_asset):
+                return
+            _add_candidate(spent_amt, got_amt, confidence)
 
+        # Phase 1: only action-local swap data/previews, like Yyy-main
         for src in sources:
             if not isinstance(src, dict):
                 continue
-            for action in src.get('actions') or []:
-                atype = str(action.get('type') or action.get('__typename') or '').lower()
-                flat = list(self._flatten_pairs(action))
-                if 'swap' in atype or any('swap tokens' in v for _, v in flat):
-                    preview_values=[]
-                    for path, value in flat:
-                        if any(k in path for k in ('preview', 'value', 'name', 'description', 'title', 'text', 'label')):
-                            preview_values.append(value)
-                    for value in preview_values:
-                        _consider_text(value, 120)
-                in_amount = out_amount = None
-                in_asset = out_asset = ''
+            actions = src.get('actions') or []
+            if not isinstance(actions, list):
+                continue
+            for action in actions:
+                if not isinstance(action, dict):
+                    continue
+                payload = action.get(action.get('type') or action.get('action') or action.get('name'))
+                aa = dict(action)
+                if isinstance(payload, dict):
+                    aa.update(payload)
+                atype = str(aa.get('type') or aa.get('action') or aa.get('__typename') or '').lower()
+                flat = list(self._flatten_pairs(aa))
+                blob = ' '.join(v for _, v in flat)
+                if 'swap' not in atype and 'swap tokens' not in blob and 'dex' not in atype:
+                    continue
+                in_asset = aa.get('asset_in') or aa.get('assetIn') or aa.get('in') or {}
+                out_asset = aa.get('asset_out') or aa.get('assetOut') or aa.get('out') or {}
+                amt_in = _parse_amount_any(aa.get('amount_in') or aa.get('amountIn') or aa.get('in_amount'), in_asset)
+                amt_out = _parse_amount_any(aa.get('amount_out') or aa.get('amountOut') or aa.get('out_amount'), out_asset)
+                out_addr = _asset_addr(out_asset)
+                out_sym = _asset_sym(out_asset)
+                if amt_in and amt_out and _is_ton_asset(in_asset) and (_asset_matches(out_addr) or _asset_matches(out_sym)):
+                    _add_candidate(amt_in, amt_out, 1000)
                 for path, value in flat:
-                    if any(tag in path for tag in ('amount_in', 'token_in', 'asset_in', 'jetton_master_in')) and in_amount is None:
-                        amt, asset = self._parse_amount_and_asset(value)
-                        if amt is not None:
-                            in_amount, in_asset = amt, asset
-                    if any(tag in path for tag in ('amount_out', 'token_out', 'asset_out', 'jetton_master_out')) and out_amount is None:
-                        amt, asset = self._parse_amount_and_asset(value)
-                        if amt is not None:
-                            out_amount, out_asset = amt, asset
-                if in_amount is not None and out_amount is not None and _asset_matches(out_asset) and in_asset in quote_assets:
-                    _add_candidate(in_amount, out_amount, 100)
+                    if any(k in path for k in ('preview', 'name', 'description', 'title', 'text', 'label', 'value')):
+                        _consider_preview_text(value, 900)
 
+        if candidates:
+            candidates.sort(key=lambda x: (-x[0], x[3], -x[1]))
+            _, spent, got, _ = candidates[0]
+            return round(float(spent), 8), round(float(got), 8)
+
+        # Phase 2: top-level preview text fallback only
         for src in sources:
             if not src:
                 continue
-            for _, value in self._flatten_pairs(src):
-                _consider_text(value, 40)
-
+            for path, value in self._flatten_pairs(src):
+                if any(k in path for k in ('preview', 'name', 'description', 'title', 'text', 'label', 'value')):
+                    _consider_preview_text(value, 400)
         if not candidates:
             return None, None
-        # Prefer strongest confidence, then amount closest to actual token received, then spent amount.
         candidates.sort(key=lambda x: (-x[0], x[3], -x[1]))
         _, spent, got, _ = candidates[0]
         return round(float(spent), 8), round(float(got), 8)
 
     async def _post_buy(self, mint: str, ev: dict, tgt: dict, ad_text: str | None, ad_link: str | None, ton_price: float):
-        meta = await fetch_token_meta(mint); token_name = (meta.get('symbol') or meta.get('name') or mint[:6]);
-        if token_name.startswith(('EQ', 'UQ', 'kQ', '0:')):
-            token_name = mint[:6]
+        meta = await fetch_token_meta(mint); token_name = (meta.get('symbol') or meta.get('name') or mint[:6])
         try:
             if meta.get('symbol') or meta.get('name') or meta.get('dexName'):
                 connm = await self.db.connect()
