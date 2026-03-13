@@ -161,7 +161,7 @@ class BuyWatcher:
                 if res is True:
                     explicit = True
         return explicit
-    def _event_action_is_buy(self, event: dict | None, mint: str) -> bool | None:
+    def _event_action_is_buy(self, event: dict | None, mint: str, labels: list[str] | None = None) -> bool | None:
         if not event:
             return None
         flat_event = list(self._flatten_pairs(event))
@@ -169,7 +169,26 @@ class BuyWatcher:
         if any(tag in event_blob for tag in ('failed transaction', 'failed', 'aborted', 'bounce', 'bounced')):
             return False
         actions = event.get('actions') or []
-        target = str(mint).lower()
+        identities = {str(mint).lower().strip()}
+        for lbl in (labels or []):
+            s = str(lbl or '').lower().strip()
+            if s and len(s) >= 2:
+                identities.add(s)
+
+        def preview_matches(preview: dict | None) -> bool:
+            if not isinstance(preview, dict):
+                return False
+            vals = []
+            for key in ('address', 'name', 'symbol', 'description'):
+                v = str(preview.get(key) or '').lower().strip()
+                if v:
+                    vals.append(v)
+            for ident in identities:
+                for v in vals:
+                    if ident == v or ident in v or v in ident:
+                        return True
+            return False
+
         saw_swap = False
         buy_score = 0
         sell_score = 0
@@ -180,18 +199,17 @@ class BuyWatcher:
             text_blob = ' '.join(v for _, v in flat)
             if status in {'failed', 'error', 'aborted'} or any(tag in text_blob for tag in ('failed transaction', 'failed', 'aborted')):
                 return False
+            swap_obj = action.get('JettonSwap') if isinstance(action.get('JettonSwap'), dict) else action
             is_swapish = ('swap' in atype) or ('swap' in text_blob) or any('jetton_master_in' in path or 'jetton_master_out' in path for path, _ in flat)
             if is_swapish:
                 saw_swap = True
-                in_match = False
-                out_match = False
+                in_preview = swap_obj.get('jetton_master_in') if isinstance(swap_obj, dict) else None
+                out_preview = swap_obj.get('jetton_master_out') if isinstance(swap_obj, dict) else None
+                in_match = preview_matches(in_preview)
+                out_match = preview_matches(out_preview)
                 ton_in = 0
                 ton_out = 0
                 for path, value in flat:
-                    if 'jetton_master_in' in path and target in value:
-                        in_match = True
-                    if 'jetton_master_out' in path and target in value:
-                        out_match = True
                     if path.endswith('ton_in'):
                         try:
                             ton_in = max(ton_in, int(str(value).replace('_', '').replace(',', '').strip() or '0'))
@@ -206,19 +224,24 @@ class BuyWatcher:
                     return False
                 if out_match and not in_match:
                     return True
+                preview_side = self._classify_from_preview_fields(action, list(identities))
+                if preview_side is False:
+                    return False
+                if preview_side is True:
+                    return True
                 if in_match and ton_out > 0 and not out_match:
                     return False
                 if out_match and ton_in > 0 and not in_match:
                     return True
             for path, value in flat:
-                has_target = (target in value) or (target in path)
+                has_target = any(ident in value or ident in path for ident in identities)
                 if not has_target:
                     continue
                 if any(tag in path for tag in ('amount_out', 'jetton_out', 'token_out', 'asset_out', 'receive', 'received', 'destination')):
                     buy_score += 3
                 if any(tag in path for tag in ('amount_in', 'jetton_in', 'token_in', 'asset_in', 'send', 'sent', 'source', 'offer')):
                     sell_score += 3
-            if target in text_blob:
+            if any(ident in text_blob for ident in identities):
                 if any(tag in text_blob for tag in ('sell', 'sold', 'dedustswappexternal', 'swap jetton for ton', 'jetton->ton')):
                     sell_score += 2
                 if any(tag in text_blob for tag in ('buy', 'bought', 'swap ton for jetton', 'ton->jetton')):
@@ -305,7 +328,7 @@ class BuyWatcher:
                 is_buy = None
                 try:
                     event = await self.rpc.get_event_by_hash(sig)
-                    is_buy = self._event_action_is_buy(event, mint)
+                    is_buy = self._event_action_is_buy(event, mint, labels)
                 except Exception:
                     event = None
                     is_buy = None
