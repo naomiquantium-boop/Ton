@@ -73,7 +73,7 @@ class LeaderboardUpdater:
 
             prev_mcap = 0.0
             try:
-                baseline_ts = now - 300
+                baseline_ts = now - 900
                 cur = await conn.execute(
                     "SELECT mcap_usd FROM mcap_snapshots WHERE mint=? AND ts<=? ORDER BY ts DESC, id DESC LIMIT 1",
                     (mint, baseline_ts),
@@ -105,7 +105,7 @@ class LeaderboardUpdater:
                     last_snap = await cur.fetchone()
                     last_mcap = float(last_snap['mcap_usd']) if last_snap and last_snap['mcap_usd'] is not None else 0.0
                     last_ts = int(last_snap['ts']) if last_snap and last_snap['ts'] is not None else 0
-                    if not last_snap or abs(last_mcap - mcap) > 0.0001 or now - last_ts >= 300:
+                    if not last_snap or abs(last_mcap - mcap) > 0.0001 or now - last_ts >= 180:
                         await conn.execute(
                             "INSERT INTO mcap_snapshots(mint, mcap_usd, ts) VALUES(?,?,?)",
                             (mint, mcap, now),

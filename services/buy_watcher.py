@@ -9,6 +9,8 @@ from utils.formatter import build_buy_message_group, build_buy_message_channel
 from bot.keyboards import buy_kb
 
 class BuyWatcher:
+    POOL_HINTS = ('dedust', 'ston', 'router', 'pool', 'vault', 'lp', 'amm')
+
     def __init__(self, bot, db, rpc):
         self.bot = bot; self.db = db; self.rpc = rpc; self._running = False; self._last_ton_price = 3.0; self._chat_type_cache: Dict[int, str] = {}
 
@@ -79,15 +81,41 @@ class BuyWatcher:
         else:
             yield prefix.lower(), str(obj).lower()
 
+    def _is_poolish(self, value: str | None) -> bool:
+        v = str(value or '').lower()
+        return any(tag in v for tag in self.POOL_HINTS)
+
+    def _row_transfer_direction(self, row: dict) -> bool | None:
+        src = str(row.get('source') or row.get('from') or row.get('sender') or row.get('wallet_address') or '').lower()
+        dst = str(row.get('destination') or row.get('to') or row.get('owner') or row.get('recipient') or '').lower()
+        src_pool = self._is_poolish(src)
+        dst_pool = self._is_poolish(dst)
+        if dst_pool and not src_pool:
+            return False
+        if src_pool and not dst_pool:
+            return True
+        if src_pool and dst_pool:
+            return False
+        return None
+
     def _row_looks_like_sell(self, row: dict) -> bool:
+        transfer_dir = self._row_transfer_direction(row)
+        if transfer_dir is False:
+            return True
         for path, value in self._flatten_pairs(row):
-            if any(k in path for k in ('destination', 'to', 'owner', 'recipient')) and any(tag in value for tag in ('dedust', 'ston', 'router', 'pool')):
+            if any(k in path for k in ('destination', 'to', 'owner', 'recipient')) and self._is_poolish(value):
+                return True
+            if any(k in path for k in ('comment', 'payload', 'message', 'opcode', 'operation', 'type')) and any(tag in value for tag in ('sell', 'swapexactjettonsforton', 'swap jetton for ton')):
                 return True
         return False
 
     def _event_action_is_buy(self, event: dict | None, mint: str) -> bool | None:
         if not event:
             return None
+        flat_event = list(self._flatten_pairs(event))
+        event_blob = ' '.join(v for _, v in flat_event)
+        if any(tag in event_blob for tag in ('failed transaction', 'failed', 'aborted', 'bounce', 'bounced')):
+            return False
         actions = event.get('actions') or []
         target = str(mint).lower()
         saw_swap = False
@@ -95,28 +123,32 @@ class BuyWatcher:
         sell_score = 0
         for action in actions:
             atype = str(action.get('type') or action.get('__typename') or '').lower()
+            status = str(action.get('status') or '').lower()
             flat = list(self._flatten_pairs(action))
-            if 'swap' in atype:
-                saw_swap = True
-            if any(target in value for _, value in flat):
-                for path, value in flat:
-                    if target not in value:
-                        continue
-                    if any(tag in path for tag in ('amount_out', 'jetton_out', 'token_out', 'asset_out', 'out', 'receive', 'received', 'destination', 'to')):
-                        buy_score += 2
-                    if any(tag in path for tag in ('amount_in', 'jetton_in', 'token_in', 'asset_in', 'in', 'send', 'sent', 'source', 'from', 'sender', 'offer')):
-                        sell_score += 2
             text_blob = ' '.join(v for _, v in flat)
-            if target in text_blob:
-                if any(tag in text_blob for tag in ('sell', 'sold', 'dedustswappexternal')):
-                    sell_score += 1
-                if any(tag in text_blob for tag in ('buy', 'bought')):
-                    buy_score += 1
-        if saw_swap:
-            if sell_score > buy_score:
+            if status in {'failed', 'error', 'aborted'} or any(tag in text_blob for tag in ('failed transaction', 'failed', 'aborted')):
                 return False
-            if buy_score > sell_score:
+            if 'swap' in atype or 'swap' in text_blob:
+                saw_swap = True
+            for path, value in flat:
+                has_target = (target in value) or (target in path)
+                if not has_target:
+                    continue
+                if any(tag in path for tag in ('amount_out', 'jetton_out', 'token_out', 'asset_out', 'out', 'receive', 'received', 'destination', 'to')):
+                    buy_score += 3
+                if any(tag in path for tag in ('amount_in', 'jetton_in', 'token_in', 'asset_in', 'in', 'send', 'sent', 'source', 'from', 'sender', 'offer')):
+                    sell_score += 3
+            if target in text_blob:
+                if any(tag in text_blob for tag in ('sell', 'sold', 'dedustswappexternal', 'swap jetton for ton', 'jetton->ton')):
+                    sell_score += 2
+                if any(tag in text_blob for tag in ('buy', 'bought', 'swap ton for jetton', 'ton->jetton')):
+                    buy_score += 2
+        if saw_swap:
+            if sell_score >= buy_score and sell_score > 0:
+                return False
+            if buy_score > sell_score and buy_score > 0:
                 return True
+            return None
         return None
 
     async def run_forever(self):
@@ -189,9 +221,11 @@ class BuyWatcher:
                     is_buy = self._event_action_is_buy(event, mint)
                 except Exception:
                     is_buy = None
-                if is_buy is False:
-                    await self._set_last_sig(conn, mint, sig)
-                    continue
+                if is_buy is not True:
+                    row_buy = self._row_transfer_direction(ev.get('row') or {})
+                    if row_buy is not True:
+                        await self._set_last_sig(conn, mint, sig)
+                        continue
                 posted = await self._post_buy(mint, ev, tgt, ad_text, ad_link, ton_price)
                 if posted:
                     await self._mark_posted(conn, sig)
