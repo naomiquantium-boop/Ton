@@ -5,7 +5,7 @@ import time
 import secrets
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
-from aiogram.filters import Command, CommandObject, StateFilter
+from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
@@ -124,54 +124,6 @@ def _norm_tg(v: str | None) -> str | None:
     if t.startswith('http://'):
         return f'https://{t[7:]}'
     return t
-
-
-
-def _is_ca_query_text(text: str | None) -> bool:
-    s = (text or '').strip().lower()
-    if not s:
-        return False
-    # Accept plain ca/contract/address and command forms with optional @bot suffix.
-    s = s.split()[0]
-    s = s.rstrip('!?.,:;')
-    base = s.split('@', 1)[0]
-    return base in {'ca', '/ca', 'contract', '/contract', 'address', '/address'}
-
-async def _reply_group_ca(msg: Message, db: DB):
-    if msg.chat.type not in {'group', 'supergroup'}:
-        return False
-    conn = await db.connect()
-    cur = await conn.execute("SELECT token_mint, COALESCE(NULLIF(symbol,''), NULLIF(name,''), token_mint) AS label FROM group_settings LEFT JOIN tracked_tokens ON tracked_tokens.mint=group_settings.token_mint WHERE group_id=? AND is_active=1 ORDER BY group_settings.id DESC LIMIT 1", (msg.chat.id,))
-    row = await cur.fetchone()
-    await conn.close()
-    if not row:
-        await msg.reply('No token added for this group yet.')
-        return True
-    await msg.reply(f"Symbol: {row['label']}\n{row['token_mint']}")
-    return True
-
-@router.message(StateFilter('*'), Command('ca'))
-async def early_token_contract_reply_cmd(msg: Message, db: DB):
-    if msg.chat.type not in {"group", "supergroup"}:
-        return
-    if await _reply_group_ca(msg, db):
-        return
-
-@router.message(StateFilter('*'), F.text.func(_is_ca_query_text))
-async def early_token_contract_reply(msg: Message, db: DB):
-    if msg.chat.type not in {"group", "supergroup"}:
-        return
-    if await _reply_group_ca(msg, db):
-        return
-
-@router.message(StateFilter('*'))
-async def ultra_early_group_ca_fallback(msg: Message, db: DB):
-    if msg.chat.type not in {"group", "supergroup"}:
-        return
-    txt = getattr(msg, 'text', None)
-    if _is_ca_query_text(txt):
-        if await _reply_group_ca(msg, db):
-            return
 
 async def _tokens(db: DB) -> list[tuple[str, str]]:
     conn = await db.connect()
@@ -348,9 +300,6 @@ async def menu_add(cq: CallbackQuery, state: FSMContext):
 
 @router.message(AddTokenFlow.mint)
 async def add_token_mint(msg: Message, state: FSMContext, db: DB):
-    if _is_ca_query_text(msg.text):
-        if await _reply_group_ca(msg, db):
-            return
     mint = (msg.text or '').strip()
     if not MINT_RE.match(mint):
         return await msg.reply('Send a valid TON token address.')
@@ -367,9 +316,6 @@ async def add_token_mint(msg: Message, state: FSMContext, db: DB):
 
 @router.message(AddTokenFlow.tg)
 async def add_token_tg(msg: Message, state: FSMContext, db: DB):
-    if _is_ca_query_text(msg.text):
-        if await _reply_group_ca(msg, db):
-            return
     mint = (await state.get_data()).get('token_mint')
     conn = await db.connect(); await conn.execute("UPDATE tracked_tokens SET telegram_link=? WHERE mint=?", (_norm_tg(msg.text), mint)); await conn.commit(); await conn.close(); await state.clear(); await msg.answer('✅ Token saved.', reply_markup=main_menu_kb())
 
@@ -439,9 +385,6 @@ async def edit_set(cq: CallbackQuery, state: FSMContext):
 
 @router.message(EditTokenFlow.value)
 async def edit_token_value(msg: Message, state: FSMContext, db: DB):
-    if _is_ca_query_text(msg.text):
-        if await _reply_group_ca(msg, db):
-            return
     data = await state.get_data(); mint = data.get('edit_mint'); key = data.get('edit_key')
     if not mint:
         await state.clear(); return await msg.answer('Please open Edit again.')
@@ -491,17 +434,11 @@ async def advert_pick_token(cq: CallbackQuery, state: FSMContext):
     await cq.message.answer('⬇️ Send your Telegram group/channel link'); await cq.answer()
 
 @router.message(AdvertFlow.link)
-async def advert_link(msg: Message, state: FSMContext, db: DB):
-    if _is_ca_query_text(msg.text):
-        if await _reply_group_ca(msg, db):
-            return
+async def advert_link(msg: Message, state: FSMContext):
     await state.update_data(link=(msg.text or '').strip()); await state.set_state(AdvertFlow.content); await msg.answer('⬇️ Enter your advert text.')
 
 @router.message(AdvertFlow.content)
-async def advert_content(msg: Message, state: FSMContext, db: DB):
-    if _is_ca_query_text(msg.text):
-        if await _reply_group_ca(msg, db):
-            return
+async def advert_content(msg: Message, state: FSMContext):
     await state.update_data(content=(msg.text or '').strip()); await state.set_state(AdvertFlow.duration); await msg.answer('Choose ads duration:', reply_markup=advert_duration_kb())
 
 @router.callback_query(F.data.startswith('adpkg:'))
@@ -534,10 +471,7 @@ async def trending_pick_token(cq: CallbackQuery, state: FSMContext):
     await cq.answer()
 
 @router.message(TrendingFlow.link)
-async def trending_link(msg: Message, state: FSMContext, db: DB):
-    if _is_ca_query_text(msg.text):
-        if await _reply_group_ca(msg, db):
-            return
+async def trending_link(msg: Message, state: FSMContext):
     await state.update_data(link=(msg.text or '').strip())
     await msg.answer('Choose your trending slot:', reply_markup=trending_slot_kb())
 
@@ -706,12 +640,21 @@ async def status(msg: Message, db: DB):
     await conn.close(); await msg.reply(f'Tracked tokens: {tokens}\nChannel enabled: {enabled}\nTrending forced/live: {trending}\nPending invoices: {pending}')
 
 
+@router.message(F.text.func(lambda t: bool(t and t.strip().lower() in {"ca", "contract", "address"})))
+async def token_contract_reply(msg: Message, db: DB):
+    if msg.chat.type not in {"group", "supergroup"}:
+        return
+    conn = await db.connect()
+    cur = await conn.execute("SELECT token_mint, COALESCE(NULLIF(symbol,''), NULLIF(name,''), token_mint) AS label FROM group_settings LEFT JOIN tracked_tokens ON tracked_tokens.mint=group_settings.token_mint WHERE group_id=? AND is_active=1 ORDER BY group_settings.id DESC LIMIT 1", (msg.chat.id,))
+    row = await cur.fetchone()
+    await conn.close()
+    if not row:
+        return await msg.reply('No token added for this group yet.')
+    await msg.reply(f"Symbol: {row['label']}\n{row['token_mint']}")
+
 @router.message()
 async def txhash_fallback(msg: Message, state: FSMContext, db: DB, rpc: TonAPI):
     text = (msg.text or '').strip()
-    if _is_ca_query_text(text):
-        if await _reply_group_ca(msg, db):
-            return
     if len(text) < 20 or ' ' in text or text.startswith('/'):
         return
     invoice_id = await _latest_pending_invoice_for_user(db, msg.from_user.id)
