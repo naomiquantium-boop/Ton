@@ -9,7 +9,9 @@ from utils.formatter import build_buy_message_group, build_buy_message_channel
 from bot.keyboards import buy_kb
 
 class BuyWatcher:
-    POOL_HINTS = ('dedust', 'ston', 'router', 'pool', 'vault', 'lp', 'amm')
+    POOL_HINTS = ('dedust', 'ston', 'router', 'pool', 'vault', 'lp', 'amm', 'swap')
+    SWAP_HINTS = ('swap', 'ston', 'ston.fi', 'stonfi', 'dedust', 'router', 'dex')
+    SELL_HINTS = ('sell', 'sold', 'swap jetton for ton', 'jetton->ton', 'swapexactjettonsforton')
 
     def __init__(self, bot, db, rpc):
         self.bot = bot; self.db = db; self.rpc = rpc; self._running = False; self._last_ton_price = 3.0; self._chat_type_cache: Dict[int, str] = {}
@@ -80,6 +82,22 @@ class BuyWatcher:
                 yield from self._flatten_pairs(v, key)
         else:
             yield prefix.lower(), str(obj).lower()
+
+    def _text_blob(self, *objs) -> str:
+        parts: list[str] = []
+        for obj in objs:
+            if not obj:
+                continue
+            parts.extend(v for _, v in self._flatten_pairs(obj))
+        return ' '.join(parts)
+
+    def _looks_swapish(self, *objs) -> bool:
+        blob = self._text_blob(*objs)
+        return any(tag in blob for tag in self.SWAP_HINTS)
+
+    def _looks_explicit_sell(self, *objs) -> bool:
+        blob = self._text_blob(*objs)
+        return any(tag in blob for tag in self.SELL_HINTS)
 
     def _is_poolish(self, value: str | None) -> bool:
         v = str(value or '').lower()
@@ -172,7 +190,7 @@ class BuyWatcher:
                 continue
             if sig == last_sig:
                 break
-            if self._row_failed_flag(row) or self._row_looks_like_sell(row):
+            if self._row_failed_flag(row):
                 continue
             amount_raw = row.get('amount') or row.get('jetton_amount') or 0
             decimals = int((row.get('jetton') or {}).get('decimals') or row.get('decimals') or 9)
@@ -215,17 +233,30 @@ class BuyWatcher:
                 if tx_ok is False:
                     await self._set_last_sig(conn, mint, sig)
                     continue
+                event = None
                 is_buy = None
                 try:
                     event = await self.rpc.get_event_by_hash(sig)
                     is_buy = self._event_action_is_buy(event, mint)
                 except Exception:
+                    event = None
                     is_buy = None
-                if is_buy is not True:
-                    row_buy = self._row_transfer_direction(ev.get('row') or {})
-                    if row_buy is not True:
-                        await self._set_last_sig(conn, mint, sig)
-                        continue
+
+                row = ev.get('row') or {}
+                if self._row_failed_flag(row) or self._looks_explicit_sell(row, tx, event):
+                    await self._set_last_sig(conn, mint, sig)
+                    continue
+
+                if is_buy is False:
+                    await self._set_last_sig(conn, mint, sig)
+                    continue
+
+                swapish = self._looks_swapish(row, tx, event)
+                row_dir = self._row_transfer_direction(row)
+                if is_buy is not True and not swapish and row_dir is not True:
+                    await self._set_last_sig(conn, mint, sig)
+                    continue
+
                 posted = await self._post_buy(mint, ev, tgt, ad_text, ad_link, ton_price)
                 if posted:
                     await self._mark_posted(conn, sig)
