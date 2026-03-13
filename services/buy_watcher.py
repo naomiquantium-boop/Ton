@@ -367,30 +367,61 @@ class BuyWatcher:
     def _extract_exact_buy_amounts(self, mint: str, labels: list[str] | None = None, *sources) -> tuple[float | None, float | None]:
         identities = self._identity_set(mint, labels)
         quote_assets = {'ton', 'toncoin', 'usd₮', 'usdt', 'usdt.t', 'usdtt', 'tether'}
-        best_spent: float | None = None
-        best_got: float | None = None
+        candidates: list[tuple[int, float, float]] = []
 
-        def _consider_pair(left: str, right: str):
-            nonlocal best_spent, best_got
+        def _asset_matches(value: str | None) -> bool:
+            v = self._normalize_preview_text(value)
+            return any(lbl and lbl in v for lbl in identities)
+
+        def _add_candidate(spent_amt: float | None, got_amt: float | None, confidence: int):
+            if spent_amt is None or got_amt is None:
+                return
+            if spent_amt <= 0 or got_amt <= 0:
+                return
+            candidates.append((confidence, float(spent_amt), float(got_amt)))
+
+        def _consider_pair(left: str, right: str, confidence: int = 10):
             left = self._normalize_preview_text(left)
             right = self._normalize_preview_text(right)
             spent_amt, spent_asset = self._parse_amount_and_asset(left)
             got_amt, got_asset = self._parse_amount_and_asset(right)
             if spent_amt is None or got_amt is None:
                 return
-            if not any(lbl in got_asset for lbl in identities):
+            if not _asset_matches(got_asset):
                 return
             if spent_asset not in quote_assets:
                 return
-            if best_spent is None or spent_amt > best_spent:
-                best_spent, best_got = spent_amt, got_amt
+            _add_candidate(spent_amt, got_amt, confidence)
 
-        def _consider_text(text: str):
+        def _consider_text(text: str, confidence: int = 10):
             val = self._normalize_preview_text(text)
             if '>' not in val:
                 return
             left, right = [x.strip() for x in val.split('>', 1)]
-            _consider_pair(left, right)
+            _consider_pair(left, right, confidence)
+
+        for src in sources:
+            if not isinstance(src, dict):
+                continue
+            for action in src.get('actions') or []:
+                atype = str(action.get('type') or action.get('__typename') or '').lower()
+                flat = list(self._flatten_pairs(action))
+                if 'swap' in atype or any('swap tokens' in v for _, v in flat):
+                    for _, value in flat:
+                        _consider_text(value, 100)
+                in_amount = out_amount = None
+                in_asset = out_asset = ''
+                for path, value in flat:
+                    if any(tag in path for tag in ('amount_in', 'token_in', 'asset_in', 'jetton_master_in')) and in_amount is None:
+                        amt, asset = self._parse_amount_and_asset(value)
+                        if amt is not None:
+                            in_amount, in_asset = amt, asset
+                    if any(tag in path for tag in ('amount_out', 'token_out', 'asset_out', 'jetton_master_out')) and out_amount is None:
+                        amt, asset = self._parse_amount_and_asset(value)
+                        if amt is not None:
+                            out_amount, out_asset = amt, asset
+                if in_amount is not None and out_amount is not None and _asset_matches(out_asset) and in_asset in quote_assets:
+                    _add_candidate(in_amount, out_amount, 90)
 
         for src in sources:
             if not src:
@@ -398,39 +429,19 @@ class BuyWatcher:
             blob = self._normalize_preview_text(self._text_blob(src))
             for ident in sorted(identities, key=len, reverse=True):
                 try:
-                    pat = re.compile(rf'(\d+(?:\.\d+)?)\s*(?:ton|toncoin|usd₮|usdt)\s*>\s*(\d+(?:\.\d+)?)\s*{re.escape(ident)}\b')
+                    pat = re.compile(rf'(\d+(?:\.\d+)?)\s*(?:ton|toncoin|usd₮|usdt)\s*>\s*(\d+(?:\.\d+)?)\s*{re.escape(ident)}')
                 except re.error:
                     continue
                 for m in pat.finditer(blob):
-                    spent_amt = float(m.group(1))
-                    got_amt = float(m.group(2))
-                    if best_spent is None or spent_amt > best_spent:
-                        best_spent, best_got = spent_amt, got_amt
+                    _add_candidate(float(m.group(1)), float(m.group(2)), 80)
             for _, value in self._flatten_pairs(src):
-                _consider_text(value)
+                _consider_text(value, 40)
 
-        for src in sources:
-            if not isinstance(src, dict):
-                continue
-            for action in src.get('actions') or []:
-                flat = list(self._flatten_pairs(action))
-                in_amount = out_amount = None
-                in_asset = out_asset = ''
-                for path, value in flat:
-                    if any(tag in path for tag in ('amount_in', 'token_in', 'asset_in')) and in_amount is None:
-                        amt, asset = self._parse_amount_and_asset(value)
-                        if amt is not None:
-                            in_amount, in_asset = amt, asset
-                    if any(tag in path for tag in ('amount_out', 'token_out', 'asset_out')) and out_amount is None:
-                        amt, asset = self._parse_amount_and_asset(value)
-                        if amt is not None:
-                            out_amount, out_asset = amt, asset
-                if in_amount is not None and out_amount is not None and any(lbl in out_asset for lbl in identities) and in_asset in quote_assets:
-                    if best_spent is None or in_amount > best_spent:
-                        best_spent, best_got = in_amount, out_amount
-                for _, value in flat:
-                    _consider_text(value)
-        return best_spent, best_got
+        if not candidates:
+            return None, None
+        candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        _, spent, got = candidates[0]
+        return spent, got
 
     async def _post_buy(self, mint: str, ev: dict, tgt: dict, ad_text: str | None, ad_link: str | None, ton_price: float):
         meta = await fetch_token_meta(mint); token_name = (meta.get('symbol') or meta.get('name') or mint[:6]);
