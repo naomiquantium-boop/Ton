@@ -1,7 +1,6 @@
 from __future__ import annotations
-import asyncio, time
+import asyncio, time, re
 from typing import Dict
-import re
 from bot.config import settings
 from services.token_meta import fetch_token_meta
 from services.ads_service import AdsService
@@ -13,6 +12,8 @@ class BuyWatcher:
     POOL_HINTS = ('dedust', 'ston', 'router', 'pool', 'vault', 'lp', 'amm', 'swap')
     SWAP_HINTS = ('swap', 'ston', 'ston.fi', 'stonfi', 'dedust', 'router', 'dex')
     SELL_HINTS = ('sell', 'sold', 'swap jetton for ton', 'jetton->ton', 'swapexactjettonsforton')
+    TON_SYMBOLS = {'ton', 'pton', 'wton'}
+    _SWAP_RE = re.compile(r'([0-9][0-9,]*(?:\.[0-9]+)?)\s*([A-Za-z][A-Za-z0-9._-]*)\s*>\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([A-Za-z][A-Za-z0-9._-]*)', re.I)
 
     def __init__(self, bot, db, rpc):
         self.bot = bot; self.db = db; self.rpc = rpc; self._running = False; self._last_ton_price = 3.0; self._chat_type_cache: Dict[int, str] = {}
@@ -72,6 +73,7 @@ class BuyWatcher:
         if status in {'failed', 'error', 'aborted'}:
             return False
         return True
+
     def _flatten_pairs(self, obj, prefix: str = ""):
         if isinstance(obj, dict):
             for k, v in obj.items():
@@ -117,117 +119,67 @@ class BuyWatcher:
             return False
         return None
 
-    def _row_looks_like_sell(self, row: dict) -> bool:
-        transfer_dir = self._row_transfer_direction(row)
-        if transfer_dir is False:
-            return True
-        for path, value in self._flatten_pairs(row):
-            if any(k in path for k in ('destination', 'to', 'owner', 'recipient')) and self._is_poolish(value):
-                return True
-            if any(k in path for k in ('comment', 'payload', 'message', 'opcode', 'operation', 'type')) and any(tag in value for tag in ('sell', 'swapexactjettonsforton', 'swap jetton for ton')):
-                return True
-        return False
-
     def _normalize_preview_text(self, value: str | None) -> str:
         s = str(value or '').lower()
-        for ch in (',', '\u2009', '\xa0', '\n', '\r', '\t'):
+        s = s.replace(',', '')
+        for ch in ('\u2009', '\xa0', '\n', '\r', '\t'):
             s = s.replace(ch.encode().decode('unicode_escape'), ' ')
         for arrow in ('→', '➡', '⇒', '⟶', '⟹', '->', '=>'):
             s = s.replace(arrow, ' > ')
         return ' '.join(s.split())
+    def _norm_asset(self, value: str | None) -> str:
+        return re.sub(r'[^a-z0-9]', '', str(value or '').lower())
 
-    def _token_aliases(self, labels: list[str]) -> list[str]:
-        aliases: list[str] = []
-        for raw in labels:
-            s = str(raw or '').lower().strip()
-            if not s:
+    def _norm_label_set(self, labels: list[str]) -> set[str]:
+        out = set()
+        for x in labels:
+            n = self._norm_asset(x)
+            if n:
+                out.add(n)
+        return out
+
+    def _is_ton_asset(self, asset: str) -> bool:
+        a = self._norm_asset(asset)
+        return a in self.TON_SYMBOLS or a.endswith('ton')
+
+    def _parse_num(self, value: str | None) -> float:
+        try:
+            return float(str(value or '0').replace(',', '').strip())
+        except Exception:
+            return 0.0
+
+    def _extract_swap_pair(self, *objs, labels: list[str]):
+        label_set = self._norm_label_set(labels)
+        for obj in objs:
+            if not obj:
                 continue
-            aliases.append(s)
-            cleaned = re.sub(r'[^a-z0-9._-]+', '', s)
-            if cleaned and cleaned not in aliases:
-                aliases.append(cleaned)
-            if len(s) >= 6:
-                short = s[:6]
-                if short not in aliases:
-                    aliases.append(short)
-        return aliases
-
-    def _is_ton_symbol(self, sym: str | None) -> bool:
-        s = re.sub(r'[^a-z0-9]+', '', str(sym or '').lower())
-        return s in {'ton', 'pton', 'wton'} or s.endswith('ton')
-
-    def _extract_swap_pairs(self, *objs) -> list[tuple[float, str, float, str]]:
-        text = self._normalize_preview_text(self._text_blob(*objs))
-        pairs: list[tuple[float, str, float, str]] = []
-        pattern = re.compile(r'([0-9][0-9,]*(?:\.[0-9]+)?)\s+([a-z0-9._-]{2,})\s*>\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s+([a-z0-9._-]{2,})')
-        for m in pattern.finditer(text):
-            try:
-                left_amt = float(m.group(1).replace(',', ''))
-                right_amt = float(m.group(3).replace(',', ''))
-            except Exception:
-                continue
-            left_sym = m.group(2).lower()
-            right_sym = m.group(4).lower()
-            pairs.append((left_amt, left_sym, right_amt, right_sym))
-        return pairs
-
-    def _classify_swap_preview(self, value: str | None, labels: list[str]) -> bool | None:
-        val = self._normalize_preview_text(value)
-        aliases = self._token_aliases(labels)
-        for left_amt, left_sym, right_amt, right_sym in self._extract_swap_pairs(val):
-            left_has = any(a and (a == left_sym or a in left_sym) for a in aliases)
-            right_has = any(a and (a == right_sym or a in right_sym) for a in aliases)
-            if left_has and self._is_ton_symbol(right_sym):
-                return False
-            if self._is_ton_symbol(left_sym) and right_has:
-                return True
-        if '>' not in val:
-            return None
-        left, right = [x.strip() for x in val.split('>', 1)]
-        left_has = any(lbl in left for lbl in aliases)
-        right_has = any(lbl in right for lbl in aliases)
-        if left_has and any(tok in right for tok in (' ton', 'pton', 'wton', 'ton ')) and not right_has:
-            return False
-        if right_has and any(tok in left for tok in (' ton', 'pton', 'wton', 'ton ')) and not left_has:
-            return True
-        if left_has and not right_has:
-            return False
-        if right_has and not left_has:
-            return True
+            for path, value in self._flatten_pairs(obj):
+                if not any(k in path for k in ('preview', 'name', 'description', 'title', 'text', 'label', 'value', 'comment', 'payload', 'message')):
+                    continue
+                norm = self._normalize_preview_text(value)
+                if '>' not in norm:
+                    continue
+                for m in self._SWAP_RE.finditer(norm):
+                    left_amt = self._parse_num(m.group(1))
+                    left_asset = self._norm_asset(m.group(2))
+                    right_amt = self._parse_num(m.group(3))
+                    right_asset = self._norm_asset(m.group(4))
+                    if left_amt <= 0 or right_amt <= 0:
+                        continue
+                    left_is_token = left_asset in label_set
+                    right_is_token = right_asset in label_set
+                    left_is_ton = self._is_ton_asset(left_asset)
+                    right_is_ton = self._is_ton_asset(right_asset)
+                    if left_is_token and right_is_ton:
+                        return {'is_buy': False, 'spent_ton': right_amt, 'got_tokens': left_amt, 'source': norm}
+                    if left_is_ton and right_is_token:
+                        return {'is_buy': True, 'spent_ton': left_amt, 'got_tokens': right_amt, 'source': norm}
         return None
 
     def _classify_from_preview_fields(self, obj: dict | None, labels: list[str]) -> bool | None:
-        if not obj:
-            return None
-        explicit = None
-        for path, value in self._flatten_pairs(obj):
-            if any(k in path for k in ('preview', 'name', 'description', 'title', 'text', 'label', 'value')):
-                res = self._classify_swap_preview(value, labels)
-                if res is False:
-                    return False
-                if res is True:
-                    explicit = True
-        return explicit
+        pair = self._extract_swap_pair(obj, labels=labels)
+        return None if not pair else pair['is_buy']
 
-    def _classify_from_any_blob(self, labels: list[str], *objs) -> bool | None:
-        aliases = self._token_aliases(labels)
-        explicit_buy = False
-        for left_amt, left_sym, right_amt, right_sym in self._extract_swap_pairs(*objs):
-            left_has = any(a and (a == left_sym or a in left_sym) for a in aliases)
-            right_has = any(a and (a == right_sym or a in right_sym) for a in aliases)
-            if left_has and self._is_ton_symbol(right_sym):
-                return False
-            if self._is_ton_symbol(left_sym) and right_has:
-                explicit_buy = True
-        return True if explicit_buy else None
-
-    def _extract_buy_spent_ton(self, labels: list[str], *objs) -> float | None:
-        aliases = self._token_aliases(labels)
-        for left_amt, left_sym, right_amt, right_sym in self._extract_swap_pairs(*objs):
-            right_has = any(a and (a == right_sym or a in right_sym) for a in aliases)
-            if self._is_ton_symbol(left_sym) and right_has and left_amt > 0:
-                return left_amt
-        return None
     def _event_action_is_buy(self, event: dict | None, mint: str) -> bool | None:
         if not event:
             return None
@@ -253,9 +205,9 @@ class BuyWatcher:
                 has_target = (target in value) or (target in path)
                 if not has_target:
                     continue
-                if any(tag in path for tag in ('amount_out', 'jetton_out', 'token_out', 'asset_out', 'out', 'receive', 'received', 'destination', 'to')):
+                if any(tag in path for tag in ('amount_out', 'jetton_out', 'token_out', 'asset_out', 'receive', 'received')):
                     buy_score += 3
-                if any(tag in path for tag in ('amount_in', 'jetton_in', 'token_in', 'asset_in', 'in', 'send', 'sent', 'source', 'from', 'sender', 'offer')):
+                if any(tag in path for tag in ('amount_in', 'jetton_in', 'token_in', 'asset_in', 'send', 'sent', 'offer')):
                     sell_score += 3
             if target in text_blob:
                 if any(tag in text_blob for tag in ('sell', 'sold', 'dedustswappexternal', 'swap jetton for ton', 'jetton->ton')):
@@ -269,6 +221,23 @@ class BuyWatcher:
                 return True
             return None
         return None
+
+    def _extract_ton_amount_fallback(self, *objs) -> float:
+        best = 0.0
+        for obj in objs:
+            if not obj:
+                continue
+            for path, value in self._flatten_pairs(obj):
+                if not any(k in path for k in ('ton', 'pton', 'amount', 'value', 'native')):
+                    continue
+                txt = self._normalize_preview_text(value)
+                m = re.search(r'([0-9]+(?:\.[0-9]+)?)\s*(pton|ton)', txt)
+                if not m:
+                    continue
+                amt = self._parse_num(m.group(1))
+                if amt > best:
+                    best = amt
+        return best
 
     async def run_forever(self):
         self._running = True
@@ -350,49 +319,36 @@ class BuyWatcher:
                     is_buy = None
 
                 row = ev.get('row') or {}
-                preview_side = None
-                pair_side = None
-                try:
-                    preview_side = self._classify_from_preview_fields(event, labels)
-                    if preview_side is None:
-                        preview_side = self._classify_from_preview_fields(tx, labels)
-                    if preview_side is None:
-                        preview_side = self._classify_from_preview_fields(row, labels)
-                    pair_side = self._classify_from_any_blob(labels, event, tx, row)
-                except Exception:
-                    preview_side = None
-                    pair_side = None
-
+                swap_pair = self._extract_swap_pair(event, tx, row, labels=labels)
                 if self._row_failed_flag(row) or self._looks_explicit_sell(row, tx, event):
                     await self._set_last_sig(conn, mint, sig)
                     continue
-
-                explicit_side = preview_side if preview_side is not None else pair_side
-                if explicit_side is False:
-                    await self._set_last_sig(conn, mint, sig)
-                    continue
-                if explicit_side is True:
+                if swap_pair:
+                    if not swap_pair['is_buy']:
+                        await self._set_last_sig(conn, mint, sig)
+                        continue
+                    ev['spent_ton'] = float(swap_pair['spent_ton'] or 0.0)
+                    if swap_pair.get('got_tokens'):
+                        ev['got_tokens'] = float(swap_pair['got_tokens'])
                     is_buy = True
-
-                if is_buy is False:
+                elif is_buy is False:
                     await self._set_last_sig(conn, mint, sig)
                     continue
-
-                swapish = self._looks_swapish(row, tx, event)
-                row_dir = self._row_transfer_direction(row)
-                if is_buy is not True:
-                    if not swapish:
+                else:
+                    swapish = self._looks_swapish(row, tx, event)
+                    row_dir = self._row_transfer_direction(row)
+                    if not swapish and row_dir is not True:
                         await self._set_last_sig(conn, mint, sig)
                         continue
                     if row_dir is False:
                         await self._set_last_sig(conn, mint, sig)
                         continue
-                spent_ton_actual = None
-                try:
-                    spent_ton_actual = self._extract_buy_spent_ton(labels, event, tx, row)
-                except Exception:
-                    spent_ton_actual = None
-                ev['spent_ton_actual'] = spent_ton_actual
+                    fallback_ton = self._extract_ton_amount_fallback(event, tx, row)
+                    if fallback_ton <= 0:
+                        await self._set_last_sig(conn, mint, sig)
+                        continue
+                    ev['spent_ton'] = fallback_ton
+                    is_buy = True
 
                 posted = await self._post_buy(mint, ev, tgt, ad_text, ad_link, ton_price)
                 if posted:
@@ -411,13 +367,10 @@ class BuyWatcher:
                 await connm.commit(); await connm.close()
         except Exception:
             pass
-        got_tokens = float(ev.get('got_tokens') or 0.0); buyer = ev.get('buyer') or 'Unknown'; spent_usd = (float(meta.get('priceUsd') or 0.0) * got_tokens) if meta.get('priceUsd') is not None else 0.0
-        spent_ton_actual = ev.get('spent_ton_actual')
-        try:
-            spent_ton = float(spent_ton_actual) if spent_ton_actual is not None else 0.0
-        except Exception:
-            spent_ton = 0.0
+        got_tokens = float(ev.get('got_tokens') or 0.0); buyer = ev.get('buyer') or 'Unknown'; spent_ton = float(ev.get('spent_ton') or 0.0); spent_usd = (spent_ton * ton_price) if spent_ton and ton_price else 0.0
         if spent_ton <= 0:
+            price_usd = float(meta.get('priceUsd') or 0.0) if meta.get('priceUsd') is not None else 0.0
+            spent_usd = price_usd * got_tokens if price_usd else 0.0
             spent_ton = (spent_usd / ton_price) if spent_usd and ton_price else 0.0
         if spent_ton < float(settings.MIN_BUY_DEFAULT_TON): return False
         now_ts = int(time.time())
