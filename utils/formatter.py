@@ -66,7 +66,7 @@ def _build(token_symbol, emoji, spent_sol, spent_usd, got_tokens, buyer, tx_url,
     lines = [title, "", emoji_bar(emoji, count), ""]
     lines.append(f"💵 {fmt_num(display_value, 2)} {spent_symbol}{usd_part}")
     lines.append(f"🔁 {fmt_num(got_tokens, 2)} {_a(token_symbol, tg_url)}")
-    lines.append(f"👤 {_a(short_addr(buyer), tx_url)} | {_a('Txn', tx_url)}")
+    lines.append(f"👤 {short_addr(buyer)} | {_a('Txn', tx_url)}")
     if price_usd is not None:
         lines.append(f"🏷 Price: ${fmt_num(price_usd, 6)}")
     if mcap_usd is not None:
