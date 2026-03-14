@@ -419,16 +419,7 @@ async def menu_group(cq: CallbackQuery):
 
 @router.callback_query(F.data == 'menu:advert')
 async def advert_menu(cq: CallbackQuery, db: DB, state: FSMContext):
-    await state.clear()
-    mint = await _group_token(db, cq.message.chat.id) if cq.message and cq.message.chat.type in ('group', 'supergroup') else None
-    if mint:
-        conn = await db.connect()
-        cur = await conn.execute("SELECT COALESCE(NULLIF(symbol,''), NULLIF(name,''), mint) AS label FROM tracked_tokens WHERE mint=?", (mint,))
-        row = await cur.fetchone()
-        await conn.close()
-        tokens = [(mint, row['label'] if row else mint)]
-    else:
-        tokens = await _tokens(db)
+    await state.clear(); tokens = await _tokens(db)
     if not tokens:
         await cq.message.answer('No tracked tokens yet. Use ➕ Add Token first.')
     else:
@@ -464,16 +455,7 @@ async def advert_duration(cq: CallbackQuery, state: FSMContext, db: DB, rpc: Ton
 
 @router.callback_query(F.data == 'menu:trending')
 async def trending_menu(cq: CallbackQuery, db: DB, state: FSMContext):
-    await state.clear()
-    mint = await _group_token(db, cq.message.chat.id) if cq.message and cq.message.chat.type in ('group', 'supergroup') else None
-    if mint:
-        conn = await db.connect()
-        cur = await conn.execute("SELECT COALESCE(NULLIF(symbol,''), NULLIF(name,''), mint) AS label FROM tracked_tokens WHERE mint=?", (mint,))
-        row = await cur.fetchone()
-        await conn.close()
-        tokens = [(mint, row['label'] if row else mint)]
-    else:
-        tokens = await _tokens(db)
+    await state.clear(); tokens = await _tokens(db)
     if not tokens:
         await cq.message.answer('No tracked tokens yet. Use ➕ Add Token first.')
     else:
@@ -481,8 +463,11 @@ async def trending_menu(cq: CallbackQuery, db: DB, state: FSMContext):
     await cq.answer()
 
 @router.callback_query(F.data.startswith('trendtoken:'))
-async def trending_pick_token(cq: CallbackQuery, state: FSMContext):
+async def trending_pick_token(cq: CallbackQuery, state: FSMContext, db: DB):
     mint = cq.data.split(':', 1)[1]
+    group_mint = await _group_token(db, cq.message.chat.id) if cq.message and cq.message.chat.type in ('group', 'supergroup') else None
+    if group_mint and mint != group_mint:
+        mint = group_mint
     meta = await fetch_token_meta(mint); label = meta.get('symbol') or meta.get('name') or mint[:6]
     await state.clear(); await state.set_state(TrendingFlow.link); await state.update_data(token_mint=mint, token_label=label)
     await cq.message.answer('⬇️ Send your Telegram group/channel link')
