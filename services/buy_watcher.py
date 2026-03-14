@@ -344,25 +344,31 @@ class BuyWatcher:
                     preview_side = None
                     parsed_ton = None
 
-                if self._row_failed_flag(row) or self._looks_explicit_sell(row, tx, event):
+                row_dir = self._row_transfer_direction(row)
+                swapish = self._looks_swapish(row, tx, event)
+
+                if self._row_failed_flag(row) or self._looks_explicit_sell(row, tx, event) or self._row_looks_like_sell(row):
                     await self._set_last_sig(conn, mint, sig)
                     continue
 
-                if preview_side is False:
-                    await self._set_last_sig(conn, mint, sig)
-                    continue
-                if preview_side is True:
-                    is_buy = True
-
-                if is_buy is False:
+                if preview_side is False or is_buy is False or row_dir is False:
                     await self._set_last_sig(conn, mint, sig)
                     continue
 
-                # Strict mode: only post real buy swaps where TON->token preview was parsed.
-                # This blocks pure token transfers and token->TON sells from being estimated as buys.
+                explicit_buy = bool(preview_side is True or is_buy is True or (row_dir is True and swapish))
+                if not explicit_buy:
+                    await self._set_last_sig(conn, mint, sig)
+                    continue
+
+                # Prefer real TON parsed from swap preview/event. Only fall back to estimation
+                # after the tx is already classified as a real buy swap.
                 if not parsed_ton or parsed_ton <= 0:
-                    await self._set_last_sig(conn, mint, sig)
-                    continue
+                    price_usd = float(meta_hint.get('priceUsd') or 0.0)
+                    if price_usd > 0 and ton_price > 0 and ev.get('got_tokens'):
+                        parsed_ton = (float(ev.get('got_tokens') or 0.0) * price_usd) / ton_price
+                    else:
+                        await self._set_last_sig(conn, mint, sig)
+                        continue
 
                 ev['spent_ton'] = parsed_ton
                 posted = await self._post_buy(mint, ev, tgt, ad_text, ad_link, ton_price)
