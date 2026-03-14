@@ -132,19 +132,6 @@ async def _tokens(db: DB) -> list[tuple[str, str]]:
     await conn.close()
     return [(r['mint'], r['label']) for r in rows]
 
-async def _tokens_for_chat(db: DB, chat) -> list[tuple[str, str]]:
-    if chat and getattr(chat, 'type', None) in ('group', 'supergroup'):
-        mint = await _group_token(db, int(chat.id))
-        if mint:
-            conn = await db.connect()
-            cur = await conn.execute("SELECT mint, COALESCE(symbol, name, mint) AS label FROM tracked_tokens WHERE mint=? LIMIT 1", (mint,))
-            row = await cur.fetchone()
-            await conn.close()
-            if row:
-                return [(row['mint'], row['label'])]
-            return [(mint, mint)]
-    return await _tokens(db)
-
 async def _group_token(db: DB, group_id: int) -> str | None:
     conn = await db.connect()
     cur = await conn.execute("SELECT token_mint FROM group_settings WHERE group_id=? AND is_active=1", (group_id,))
@@ -284,12 +271,12 @@ async def start(msg: Message, state: FSMContext, db: DB):
     if len(parts) > 1:
         payload = parts[1].strip().lower()
     if payload == 'ads':
-        tokens = await _tokens_for_chat(db, msg.chat)
+        tokens = await _tokens(db)
         if not tokens:
             return await msg.answer('💎 SpyTON Ads\n\nNo tracked tokens yet. Use ➕ Add Token first.', reply_markup=main_menu_kb())
         return await msg.answer('💎 SpyTON Ads\n\nSelect your token to continue.', reply_markup=token_list_kb(tokens, 'adtoken', back='menu:home'))
     if payload == 'trending':
-        tokens = await _tokens_for_chat(db, msg.chat)
+        tokens = await _tokens(db)
         if not tokens:
             return await msg.answer('📈 SpyTON Trending\n\nNo tracked tokens yet. Use ➕ Add Token first.', reply_markup=main_menu_kb())
         return await msg.answer('📈 SpyTON Trending\n\nSelect your token to continue.', reply_markup=token_list_kb(tokens, 'trendtoken', back='menu:home'))
@@ -432,7 +419,16 @@ async def menu_group(cq: CallbackQuery):
 
 @router.callback_query(F.data == 'menu:advert')
 async def advert_menu(cq: CallbackQuery, db: DB, state: FSMContext):
-    await state.clear(); tokens = await _tokens_for_chat(db, cq.message.chat if cq.message else None)
+    await state.clear()
+    mint = await _group_token(db, cq.message.chat.id) if cq.message and cq.message.chat.type in ('group', 'supergroup') else None
+    if mint:
+        conn = await db.connect()
+        cur = await conn.execute("SELECT COALESCE(NULLIF(symbol,''), NULLIF(name,''), mint) AS label FROM tracked_tokens WHERE mint=?", (mint,))
+        row = await cur.fetchone()
+        await conn.close()
+        tokens = [(mint, row['label'] if row else mint)]
+    else:
+        tokens = await _tokens(db)
     if not tokens:
         await cq.message.answer('No tracked tokens yet. Use ➕ Add Token first.')
     else:
@@ -468,7 +464,16 @@ async def advert_duration(cq: CallbackQuery, state: FSMContext, db: DB, rpc: Ton
 
 @router.callback_query(F.data == 'menu:trending')
 async def trending_menu(cq: CallbackQuery, db: DB, state: FSMContext):
-    await state.clear(); tokens = await _tokens_for_chat(db, cq.message.chat if cq.message else None)
+    await state.clear()
+    mint = await _group_token(db, cq.message.chat.id) if cq.message and cq.message.chat.type in ('group', 'supergroup') else None
+    if mint:
+        conn = await db.connect()
+        cur = await conn.execute("SELECT COALESCE(NULLIF(symbol,''), NULLIF(name,''), mint) AS label FROM tracked_tokens WHERE mint=?", (mint,))
+        row = await cur.fetchone()
+        await conn.close()
+        tokens = [(mint, row['label'] if row else mint)]
+    else:
+        tokens = await _tokens(db)
     if not tokens:
         await cq.message.answer('No tracked tokens yet. Use ➕ Add Token first.')
     else:
