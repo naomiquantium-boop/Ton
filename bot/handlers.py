@@ -463,11 +463,8 @@ async def trending_menu(cq: CallbackQuery, db: DB, state: FSMContext):
     await cq.answer()
 
 @router.callback_query(F.data.startswith('trendtoken:'))
-async def trending_pick_token(cq: CallbackQuery, state: FSMContext, db: DB):
+async def trending_pick_token(cq: CallbackQuery, state: FSMContext):
     mint = cq.data.split(':', 1)[1]
-    group_mint = await _group_token(db, cq.message.chat.id) if cq.message and cq.message.chat.type in ('group', 'supergroup') else None
-    if group_mint and mint != group_mint:
-        mint = group_mint
     meta = await fetch_token_meta(mint); label = meta.get('symbol') or meta.get('name') or mint[:6]
     await state.clear(); await state.set_state(TrendingFlow.link); await state.update_data(token_mint=mint, token_label=label)
     await cq.message.answer('⬇️ Send your Telegram group/channel link')
