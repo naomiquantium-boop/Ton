@@ -161,88 +161,86 @@ class BuyWatcher:
                 if res is True:
                     explicit = True
         return explicit
-    def _label_variants(self, labels: list[str]) -> list[str]:
-        out: list[str] = []
-        for raw in labels or []:
-            v = str(raw or '').strip().lower()
-            if not v or v in out:
+
+    def _token_aliases(self, labels: list[str]) -> list[str]:
+        aliases: list[str] = []
+        for raw in labels:
+            s = str(raw or '').strip().lower()
+            if not s:
                 continue
-            out.append(v)
-            compact = re.sub(r'[^a-z0-9]+', '', v)
-            if compact and compact not in out:
-                out.append(compact)
-        return out
+            if len(s) >= 24 and s.startswith(('eq', 'uq', 'kq', '0:')):
+                continue
+            aliases.append(s)
+        return list(dict.fromkeys(aliases))
 
-    def _clean_asset_label(self, value: str) -> str:
-        return re.sub(r'[^a-z0-9]+', '', str(value or '').lower())
+    def _is_ton_symbol(self, sym: str) -> bool:
+        s = str(sym or '').strip().lower().replace('.', '')
+        return s in {'ton', 'pton', 'wton'}
 
-    def _is_ton_asset(self, value: str) -> bool:
-        v = self._clean_asset_label(value)
-        return v in {'ton', 'pton', 'wton', 'toncoin'} or v.endswith('ton')
-
-    def _is_token_asset(self, value: str, labels: list[str]) -> bool:
-        raw = str(value or '').lower().strip()
-        compact = self._clean_asset_label(raw)
-        if not compact:
-            return False
-        for lbl in self._label_variants(labels):
-            if lbl and (lbl in raw or lbl == compact or lbl in compact):
-                return True
-        return False
-
-    def _parse_num(self, value: str | None) -> float | None:
-        if value is None:
-            return None
-        txt = str(value).replace(',', '').strip()
+    def _parse_amount(self, s: str) -> float | None:
         try:
-            return float(txt)
+            return float(str(s).replace(',', '').strip())
         except Exception:
             return None
 
-    def _extract_swap_leg_from_text(self, text: str | None, labels: list[str]) -> dict | None:
-        val = self._normalize_preview_text(text)
-        if '>' not in val:
-            return None
-        m = re.search(r'([0-9][0-9.,]*)\s+([a-z0-9._-]+)\s*>\s*([0-9][0-9.,]*)\s+([a-z0-9._-]+)', val, re.I)
-        if not m:
-            return None
-        left_amt = self._parse_num(m.group(1))
-        left_asset = m.group(2)
-        right_amt = self._parse_num(m.group(3))
-        right_asset = m.group(4)
-        if left_amt is None or right_amt is None:
-            return None
-        left_is_ton = self._is_ton_asset(left_asset)
-        right_is_ton = self._is_ton_asset(right_asset)
-        left_is_token = self._is_token_asset(left_asset, labels)
-        right_is_token = self._is_token_asset(right_asset, labels)
-        if left_is_ton and right_is_token and not left_is_token:
-            return {'is_buy': True, 'spent_ton': left_amt, 'got_tokens': right_amt, 'text': val}
-        if left_is_token and right_is_ton and not right_is_token:
-            return {'is_buy': False, 'spent_ton': right_amt, 'got_tokens': left_amt, 'text': val}
-        return None
-
-    def _extract_swap_legs(self, labels: list[str], *objs) -> list[dict]:
+    def _extract_swap_legs(self, *objs) -> list[dict]:
         legs: list[dict] = []
-        seen: set[str] = set()
+        seen: set[tuple[str, str, str, str]] = set()
+        rx = re.compile(r'([0-9][0-9,]*(?:\.[0-9]+)?)\s+([a-z0-9._:-]+)\s*>\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s+([a-z0-9._:-]+)')
         for obj in objs:
             if not obj:
                 continue
             for path, value in self._flatten_pairs(obj):
-                if '>' not in value:
+                if not any(k in path for k in ('preview', 'name', 'description', 'title', 'text', 'label', 'value', 'type', 'action')):
                     continue
-                if not any(k in path for k in ('preview', 'name', 'description', 'title', 'text', 'label', 'value', 'payload', 'message', 'comment')):
-                    continue
-                leg = self._extract_swap_leg_from_text(value, labels)
-                if not leg:
-                    continue
-                key = f"{leg['is_buy']}|{leg['spent_ton']}|{leg['got_tokens']}|{leg['text']}"
-                if key in seen:
-                    continue
-                seen.add(key)
-                legs.append(leg)
+                norm = self._normalize_preview_text(value).replace(',', '')
+                for m in rx.finditer(norm):
+                    left_amt = self._parse_amount(m.group(1))
+                    right_amt = self._parse_amount(m.group(3))
+                    if left_amt is None or right_amt is None:
+                        continue
+                    left_sym = m.group(2).strip().lower()
+                    right_sym = m.group(4).strip().lower()
+                    key = (str(left_amt), left_sym, str(right_amt), right_sym)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    legs.append({'left_amount': left_amt, 'left_symbol': left_sym, 'right_amount': right_amt, 'right_symbol': right_sym, 'path': path, 'text': norm})
         return legs
 
+    def _pick_swap_leg(self, labels: list[str], got_tokens: float, *objs) -> dict | None:
+        aliases = self._token_aliases(labels)
+        best = None
+        best_score = -10**9
+        for leg in self._extract_swap_legs(*objs):
+            left = leg['left_symbol']
+            right = leg['right_symbol']
+            left_amt = leg['left_amount']
+            right_amt = leg['right_amount']
+            left_token = any(a == left for a in aliases)
+            right_token = any(a == right for a in aliases)
+            if not left_token and not right_token:
+                continue
+            token_amt = left_amt if left_token else right_amt
+            rel = abs(token_amt - got_tokens) / max(got_tokens, 1.0)
+            score = 1000.0 - rel * 1000.0
+            if self._is_ton_symbol(left) or self._is_ton_symbol(right):
+                score += 100.0
+            if left_token and self._is_ton_symbol(right):
+                leg['side'] = 'sell'
+                leg['spent_ton'] = right_amt
+                score += 10.0
+            elif right_token and self._is_ton_symbol(left):
+                leg['side'] = 'buy'
+                leg['spent_ton'] = left_amt
+                score += 10.0
+            else:
+                leg['side'] = None
+                leg['spent_ton'] = None
+            if score > best_score:
+                best_score = score
+                best = leg
+        return best
     def _event_action_is_buy(self, event: dict | None, mint: str) -> bool | None:
         if not event:
             return None
@@ -367,51 +365,42 @@ class BuyWatcher:
                 row = ev.get('row') or {}
                 preview_side = None
                 matched_leg = None
-                swap_legs = []
                 try:
+                    matched_leg = self._pick_swap_leg(labels, float(ev.get('got_tokens') or 0.0), event, tx, row)
                     preview_side = self._classify_from_preview_fields(event, labels)
                     if preview_side is None:
                         preview_side = self._classify_from_preview_fields(tx, labels)
                     if preview_side is None:
                         preview_side = self._classify_from_preview_fields(row, labels)
-                    swap_legs = self._extract_swap_legs(labels, event, tx, row)
-                    if swap_legs:
-                        target_amt = float(ev.get('got_tokens') or 0.0)
-                        def score(leg):
-                            diff = abs(float(leg.get('got_tokens') or 0.0) - target_amt)
-                            return (0 if leg.get('is_buy') else 1, diff)
-                        matched_leg = sorted(swap_legs, key=score)[0]
                 except Exception:
                     preview_side = None
                     matched_leg = None
-                    swap_legs = []
+
+                if matched_leg and matched_leg.get('spent_ton'):
+                    ev['spent_ton'] = float(matched_leg['spent_ton'])
+                if matched_leg and matched_leg.get('side') == 'sell':
+                    await self._set_last_sig(conn, mint, sig)
+                    continue
+                if matched_leg and matched_leg.get('side') == 'buy':
+                    is_buy = True
 
                 if self._row_failed_flag(row) or self._looks_explicit_sell(row, tx, event):
                     await self._set_last_sig(conn, mint, sig)
                     continue
 
-                if matched_leg is not None:
-                    if matched_leg.get('is_buy') is False:
-                        await self._set_last_sig(conn, mint, sig)
-                        continue
+                if preview_side is False:
+                    await self._set_last_sig(conn, mint, sig)
+                    continue
+                if preview_side is True:
                     is_buy = True
-                    ev['spent_ton'] = float(matched_leg.get('spent_ton') or 0.0)
-                    if matched_leg.get('got_tokens'):
-                        ev['got_tokens'] = float(matched_leg['got_tokens'])
-                else:
-                    if preview_side is False:
-                        await self._set_last_sig(conn, mint, sig)
-                        continue
-                    if preview_side is True:
-                        is_buy = True
 
                 if is_buy is False:
                     await self._set_last_sig(conn, mint, sig)
                     continue
 
-                swapish = bool(swap_legs) or self._looks_swapish(row, tx, event)
+                swapish = self._looks_swapish(row, tx, event)
                 row_dir = self._row_transfer_direction(row)
-                if is_buy is not True and not swapish and row_dir is not True:
+                if matched_leg is None and is_buy is not True and not swapish and row_dir is not True:
                     await self._set_last_sig(conn, mint, sig)
                     continue
 
@@ -433,8 +422,8 @@ class BuyWatcher:
         except Exception:
             pass
         got_tokens = float(ev.get('got_tokens') or 0.0); buyer = ev.get('buyer') or 'Unknown'; spent_usd = (float(meta.get('priceUsd') or 0.0) * got_tokens) if meta.get('priceUsd') is not None else 0.0; spent_ton = float(ev.get('spent_ton') or 0.0)
-        if spent_ton <= 0:
-            spent_ton = (spent_usd / ton_price) if spent_usd and ton_price else 0.0
+        if spent_ton <= 0 and spent_usd and ton_price:
+            spent_ton = (spent_usd / ton_price)
         if spent_ton < float(settings.MIN_BUY_DEFAULT_TON): return False
         now_ts = int(time.time())
         try:
